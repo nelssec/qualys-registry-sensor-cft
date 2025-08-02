@@ -1,0 +1,1174 @@
+{
+  "AWSTemplateFormatVersion": "2010-09-09",
+  "Description": "ECS Cluster on EC2 for Qualys Registry Sensor deployment with optional VPC creation",
+  "Parameters": {
+    "ClusterName": {
+      "Type": "String",
+      "Default": "qualys-registry-cluster",
+      "Description": "Name of the ECS cluster"
+    },
+    "InstanceType": {
+      "Type": "String",
+      "Default": "c5.large",
+      "AllowedValues": [
+        "t3.medium",
+        "t3.large",
+        "t3.xlarge",
+        "c5.large",
+        "c5.xlarge",
+        "c5.2xlarge",
+        "m5.large",
+        "m5.xlarge",
+        "m5.2xlarge"
+      ],
+      "Description": "EC2 instance type for ECS cluster nodes. c5.large recommended for Qualys workload."
+    },
+    "MinSize": {
+      "Type": "Number",
+      "Default": 1,
+      "MinValue": 1,
+      "MaxValue": 10,
+      "Description": "Minimum number of EC2 instances in the cluster"
+    },
+    "MaxSize": {
+      "Type": "Number",
+      "Default": 3,
+      "MinValue": 1,
+      "MaxValue": 20,
+      "Description": "Maximum number of EC2 instances in the cluster"
+    },
+    "DesiredCapacity": {
+      "Type": "Number",
+      "Default": 2,
+      "MinValue": 1,
+      "MaxValue": 10,
+      "Description": "Desired number of EC2 instances in the cluster"
+    },
+    "CreateVpc": {
+      "Type": "String",
+      "Default": "false",
+      "AllowedValues": ["true", "false"],
+      "Description": "Create new VPC with private subnets and NAT gateway"
+    },
+    "VpcId": {
+      "Type": "String",
+      "Default": "",
+      "Description": "Existing VPC ID (required if CreateVpc=false)"
+    },
+    "SubnetIds": {
+      "Type": "CommaDelimitedList",
+      "Default": "",
+      "Description": "Existing subnet IDs (required if CreateVpc=false)"
+    },
+    "KeyName": {
+      "Type": "String",
+      "Default": "",
+      "Description": "Optional: EC2 Key Pair for SSH access to instances"
+    },
+    "QualysImage": {
+      "Type": "String",
+      "Description": "Qualys container sensor image from private ECR"
+    },
+    "QualysActivationId": {
+      "Type": "String",
+      "Description": "Qualys activation ID for the container sensor",
+      "NoEcho": true
+    },
+    "QualysCustomerId": {
+      "Type": "String",
+      "Description": "Qualys customer ID",
+      "NoEcho": true
+    },
+    "QualysPodUrl": {
+      "Type": "String",
+      "Default": "",
+      "Description": "Qualys Container Security Server URL for your platform"
+    },
+    "QualysHttpsProxy": {
+      "Type": "String",
+      "Default": "",
+      "Description": "HTTPS proxy server (FQDN or IP:port) - leave empty if not using proxy"
+    },
+    "HttpsProxy": {
+      "Type": "String",
+      "Default": "",
+      "Description": "Standard HTTPS proxy environment variable - leave empty if not using proxy"
+    },
+    "LatestECSOptimizedAMI": {
+      "Type": "AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>",
+      "Default": "/aws/service/ecs/optimized-ami/amazon-linux-2/recommended/image_id",
+      "Description": "Latest ECS Optimized AMI ID from SSM Parameter Store"
+    }
+  },
+  "Conditions": {
+    "CreateNewVpc": {
+      "Fn::Equals": [
+        {
+          "Ref": "CreateVpc"
+        },
+        "true"
+      ]
+    },
+    "UseExistingVpc": {
+      "Fn::Equals": [
+        {
+          "Ref": "CreateVpc"
+        },
+        "false"
+      ]
+    },
+    "HasKeyName": {
+      "Fn::Not": [
+        {
+          "Fn::Equals": [
+            {
+              "Ref": "KeyName"
+            },
+            ""
+          ]
+        }
+      ]
+    },
+    "HasHttpsProxy": {
+      "Fn::Not": [
+        {
+          "Fn::Equals": [
+            {
+              "Ref": "QualysHttpsProxy"
+            },
+            ""
+          ]
+        }
+      ]
+    },
+    "HasPodUrl": {
+      "Fn::Not": [
+        {
+          "Fn::Equals": [
+            {
+              "Ref": "QualysPodUrl"
+            },
+            ""
+          ]
+        }
+      ]
+    }
+  },
+  "Resources": {
+    "VPC": {
+      "Type": "AWS::EC2::VPC",
+      "Condition": "CreateNewVpc",
+      "Properties": {
+        "CidrBlock": "172.20.250.0/24",
+        "EnableDnsHostnames": true,
+        "EnableDnsSupport": true,
+        "Tags": [
+          {
+            "Key": "Name",
+            "Value": {
+              "Fn::Sub": "${ClusterName}-vpc"
+            }
+          }
+        ]
+      }
+    },
+    "InternetGateway": {
+      "Type": "AWS::EC2::InternetGateway",
+      "Condition": "CreateNewVpc",
+      "Properties": {
+        "Tags": [
+          {
+            "Key": "Name",
+            "Value": {
+              "Fn::Sub": "${ClusterName}-igw"
+            }
+          }
+        ]
+      }
+    },
+    "AttachGateway": {
+      "Type": "AWS::EC2::VPCGatewayAttachment",
+      "Condition": "CreateNewVpc",
+      "Properties": {
+        "VpcId": {
+          "Ref": "VPC"
+        },
+        "InternetGatewayId": {
+          "Ref": "InternetGateway"
+        }
+      }
+    },
+    "PublicSubnet1": {
+      "Type": "AWS::EC2::Subnet",
+      "Condition": "CreateNewVpc",
+      "Properties": {
+        "VpcId": {
+          "Ref": "VPC"
+        },
+        "CidrBlock": "172.20.250.0/26",
+        "AvailabilityZone": {
+          "Fn::Select": [
+            0,
+            {
+              "Fn::GetAZs": ""
+            }
+          ]
+        },
+        "MapPublicIpOnLaunch": true,
+        "Tags": [
+          {
+            "Key": "Name",
+            "Value": {
+              "Fn::Sub": "${ClusterName}-public-subnet-1"
+            }
+          }
+        ]
+      }
+    },
+    "PublicSubnet2": {
+      "Type": "AWS::EC2::Subnet",
+      "Condition": "CreateNewVpc",
+      "Properties": {
+        "VpcId": {
+          "Ref": "VPC"
+        },
+        "CidrBlock": "172.20.250.64/26",
+        "AvailabilityZone": {
+          "Fn::Select": [
+            1,
+            {
+              "Fn::GetAZs": ""
+            }
+          ]
+        },
+        "MapPublicIpOnLaunch": true,
+        "Tags": [
+          {
+            "Key": "Name",
+            "Value": {
+              "Fn::Sub": "${ClusterName}-public-subnet-2"
+            }
+          }
+        ]
+      }
+    },
+    "PrivateSubnet1": {
+      "Type": "AWS::EC2::Subnet",
+      "Condition": "CreateNewVpc",
+      "Properties": {
+        "VpcId": {
+          "Ref": "VPC"
+        },
+        "CidrBlock": "172.20.250.128/26",
+        "AvailabilityZone": {
+          "Fn::Select": [
+            0,
+            {
+              "Fn::GetAZs": ""
+            }
+          ]
+        },
+        "Tags": [
+          {
+            "Key": "Name",
+            "Value": {
+              "Fn::Sub": "${ClusterName}-private-subnet-1"
+            }
+          }
+        ]
+      }
+    },
+    "PrivateSubnet2": {
+      "Type": "AWS::EC2::Subnet",
+      "Condition": "CreateNewVpc",
+      "Properties": {
+        "VpcId": {
+          "Ref": "VPC"
+        },
+        "CidrBlock": "172.20.250.192/26",
+        "AvailabilityZone": {
+          "Fn::Select": [
+            1,
+            {
+              "Fn::GetAZs": ""
+            }
+          ]
+        },
+        "Tags": [
+          {
+            "Key": "Name",
+            "Value": {
+              "Fn::Sub": "${ClusterName}-private-subnet-2"
+            }
+          }
+        ]
+      }
+    },
+    "NATGateway1EIP": {
+      "Type": "AWS::EC2::EIP",
+      "Condition": "CreateNewVpc",
+      "DependsOn": "AttachGateway",
+      "Properties": {
+        "Domain": "vpc",
+        "Tags": [
+          {
+            "Key": "Name",
+            "Value": {
+              "Fn::Sub": "${ClusterName}-nat-eip-1"
+            }
+          }
+        ]
+      }
+    },
+    "NATGateway2EIP": {
+      "Type": "AWS::EC2::EIP",
+      "Condition": "CreateNewVpc",
+      "DependsOn": "AttachGateway",
+      "Properties": {
+        "Domain": "vpc",
+        "Tags": [
+          {
+            "Key": "Name",
+            "Value": {
+              "Fn::Sub": "${ClusterName}-nat-eip-2"
+            }
+          }
+        ]
+      }
+    },
+    "NATGateway1": {
+      "Type": "AWS::EC2::NatGateway",
+      "Condition": "CreateNewVpc",
+      "Properties": {
+        "AllocationId": {
+          "Fn::GetAtt": [
+            "NATGateway1EIP",
+            "AllocationId"
+          ]
+        },
+        "SubnetId": {
+          "Ref": "PublicSubnet1"
+        },
+        "Tags": [
+          {
+            "Key": "Name",
+            "Value": {
+              "Fn::Sub": "${ClusterName}-nat-gateway-1"
+            }
+          }
+        ]
+      }
+    },
+    "NATGateway2": {
+      "Type": "AWS::EC2::NatGateway",
+      "Condition": "CreateNewVpc",
+      "Properties": {
+        "AllocationId": {
+          "Fn::GetAtt": [
+            "NATGateway2EIP",
+            "AllocationId"
+          ]
+        },
+        "SubnetId": {
+          "Ref": "PublicSubnet2"
+        },
+        "Tags": [
+          {
+            "Key": "Name",
+            "Value": {
+              "Fn::Sub": "${ClusterName}-nat-gateway-2"
+            }
+          }
+        ]
+      }
+    },
+    "PublicRouteTable": {
+      "Type": "AWS::EC2::RouteTable",
+      "Condition": "CreateNewVpc",
+      "Properties": {
+        "VpcId": {
+          "Ref": "VPC"
+        },
+        "Tags": [
+          {
+            "Key": "Name",
+            "Value": {
+              "Fn::Sub": "${ClusterName}-public-rt"
+            }
+          }
+        ]
+      }
+    },
+    "DefaultPublicRoute": {
+      "Type": "AWS::EC2::Route",
+      "Condition": "CreateNewVpc",
+      "DependsOn": "AttachGateway",
+      "Properties": {
+        "RouteTableId": {
+          "Ref": "PublicRouteTable"
+        },
+        "DestinationCidrBlock": "0.0.0.0/0",
+        "GatewayId": {
+          "Ref": "InternetGateway"
+        }
+      }
+    },
+    "PublicSubnet1RouteTableAssociation": {
+      "Type": "AWS::EC2::SubnetRouteTableAssociation",
+      "Condition": "CreateNewVpc",
+      "Properties": {
+        "RouteTableId": {
+          "Ref": "PublicRouteTable"
+        },
+        "SubnetId": {
+          "Ref": "PublicSubnet1"
+        }
+      }
+    },
+    "PublicSubnet2RouteTableAssociation": {
+      "Type": "AWS::EC2::SubnetRouteTableAssociation",
+      "Condition": "CreateNewVpc",
+      "Properties": {
+        "RouteTableId": {
+          "Ref": "PublicRouteTable"
+        },
+        "SubnetId": {
+          "Ref": "PublicSubnet2"
+        }
+      }
+    },
+    "PrivateRouteTable1": {
+      "Type": "AWS::EC2::RouteTable",
+      "Condition": "CreateNewVpc",
+      "Properties": {
+        "VpcId": {
+          "Ref": "VPC"
+        },
+        "Tags": [
+          {
+            "Key": "Name",
+            "Value": {
+              "Fn::Sub": "${ClusterName}-private-rt-1"
+            }
+          }
+        ]
+      }
+    },
+    "DefaultPrivateRoute1": {
+      "Type": "AWS::EC2::Route",
+      "Condition": "CreateNewVpc",
+      "Properties": {
+        "RouteTableId": {
+          "Ref": "PrivateRouteTable1"
+        },
+        "DestinationCidrBlock": "0.0.0.0/0",
+        "NatGatewayId": {
+          "Ref": "NATGateway1"
+        }
+      }
+    },
+    "PrivateSubnet1RouteTableAssociation": {
+      "Type": "AWS::EC2::SubnetRouteTableAssociation",
+      "Condition": "CreateNewVpc",
+      "Properties": {
+        "RouteTableId": {
+          "Ref": "PrivateRouteTable1"
+        },
+        "SubnetId": {
+          "Ref": "PrivateSubnet1"
+        }
+      }
+    },
+    "PrivateRouteTable2": {
+      "Type": "AWS::EC2::RouteTable",
+      "Condition": "CreateNewVpc",
+      "Properties": {
+        "VpcId": {
+          "Ref": "VPC"
+        },
+        "Tags": [
+          {
+            "Key": "Name",
+            "Value": {
+              "Fn::Sub": "${ClusterName}-private-rt-2"
+            }
+          }
+        ]
+      }
+    },
+    "DefaultPrivateRoute2": {
+      "Type": "AWS::EC2::Route",
+      "Condition": "CreateNewVpc",
+      "Properties": {
+        "RouteTableId": {
+          "Ref": "PrivateRouteTable2"
+        },
+        "DestinationCidrBlock": "0.0.0.0/0",
+        "NatGatewayId": {
+          "Ref": "NATGateway2"
+        }
+      }
+    },
+    "PrivateSubnet2RouteTableAssociation": {
+      "Type": "AWS::EC2::SubnetRouteTableAssociation",
+      "Condition": "CreateNewVpc",
+      "Properties": {
+        "RouteTableId": {
+          "Ref": "PrivateRouteTable2"
+        },
+        "SubnetId": {
+          "Ref": "PrivateSubnet2"
+        }
+      }
+    },
+    "ECSCluster": {
+      "Type": "AWS::ECS::Cluster",
+      "Properties": {
+        "ClusterName": {
+          "Ref": "ClusterName"
+        },
+        "ClusterSettings": [
+          {
+            "Name": "containerInsights",
+            "Value": "enabled"
+          }
+        ],
+        "Tags": [
+          {
+            "Key": "Name",
+            "Value": {
+              "Ref": "ClusterName"
+            }
+          }
+        ]
+      }
+    },
+    "QualysECSInstanceRole": {
+      "Type": "AWS::IAM::Role",
+      "Properties": {
+        "RoleName": "QualysECRRepositoryforEC2",
+        "AssumeRolePolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Principal": {
+                "Service": "ec2.amazonaws.com"
+              },
+              "Action": "sts:AssumeRole"
+            }
+          ]
+        },
+        "ManagedPolicyArns": [
+          "arn:aws:iam::aws:policy/service-role/AmazonEC2ContainerServiceforEC2Role",
+          "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
+        ],
+        "Policies": [
+          {
+            "PolicyName": "QualysECRAccess",
+            "PolicyDocument": {
+              "Version": "2012-10-17",
+              "Statement": [
+                {
+                  "Effect": "Allow",
+                  "Action": [
+                    "ecr:GetAuthorizationToken",
+                    "ecr:BatchCheckLayerAvailability",
+                    "ecr:GetDownloadUrlForLayer",
+                    "ecr:BatchGetImage",
+                    "ecr:DescribeRepositories",
+                    "ecr:DescribeImages"
+                  ],
+                  "Resource": "*"
+                }
+              ]
+            }
+          }
+        ],
+        "Tags": [
+          {
+            "Key": "Name",
+            "Value": {
+              "Fn::Sub": "${ClusterName}-qualys-ecr-instance-role"
+            }
+          }
+        ]
+      }
+    },
+    "QualysECSInstanceProfile": {
+      "Type": "AWS::IAM::InstanceProfile",
+      "Properties": {
+        "Roles": [
+          {
+            "Ref": "QualysECSInstanceRole"
+          }
+        ]
+      }
+    },
+    "QualysECSTaskRole": {
+      "Type": "AWS::IAM::Role",
+      "Properties": {
+        "RoleName": "QualysContainerSensorTaskRole",
+        "AssumeRolePolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Principal": {
+                "Service": "ecs-tasks.amazonaws.com"
+              },
+              "Action": "sts:AssumeRole"
+            }
+          ]
+        },
+        "Policies": [
+          {
+            "PolicyName": "QualysContainerSensorPolicy",
+            "PolicyDocument": {
+              "Version": "2012-10-17",
+              "Statement": [
+                {
+                  "Effect": "Allow",
+                  "Action": [
+                    "ecr:GetAuthorizationToken",
+                    "ecr:BatchCheckLayerAvailability",
+                    "ecr:GetDownloadUrlForLayer",
+                    "ecr:BatchGetImage",
+                    "ecr:DescribeRepositories",
+                    "ecr:DescribeImages",
+                    "logs:CreateLogGroup",
+                    "logs:CreateLogStream",
+                    "logs:PutLogEvents"
+                  ],
+                  "Resource": "*"
+                }
+              ]
+            }
+          }
+        ],
+        "Tags": [
+          {
+            "Key": "Name",
+            "Value": {
+              "Fn::Sub": "${ClusterName}-qualys-task-role"
+            }
+          }
+        ]
+      }
+    },
+    "QualysECSExecutionRole": {
+      "Type": "AWS::IAM::Role",
+      "Properties": {
+        "RoleName": "QualysECRExecutionRole",
+        "AssumeRolePolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Principal": {
+                "Service": "ecs-tasks.amazonaws.com"
+              },
+              "Action": "sts:AssumeRole"
+            }
+          ]
+        },
+        "ManagedPolicyArns": [
+          "arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy"
+        ],
+        "Policies": [
+          {
+            "PolicyName": "QualysECRAccess",
+            "PolicyDocument": {
+              "Version": "2012-10-17",
+              "Statement": [
+                {
+                  "Effect": "Allow",
+                  "Action": [
+                    "ecr:GetAuthorizationToken",
+                    "ecr:BatchCheckLayerAvailability",
+                    "ecr:GetDownloadUrlForLayer",
+                    "ecr:BatchGetImage",
+                    "ecr:DescribeRepositories",
+                    "ecr:DescribeImages"
+                  ],
+                  "Resource": "*"
+                }
+              ]
+            }
+          }
+        ],
+        "Tags": [
+          {
+            "Key": "Name",
+            "Value": {
+              "Fn::Sub": "${ClusterName}-qualys-execution-role"
+            }
+          }
+        ]
+      }
+    },
+    "ECSSecurityGroup": {
+      "Type": "AWS::EC2::SecurityGroup",
+      "Properties": {
+        "GroupDescription": "Security group for ECS cluster instances",
+        "VpcId": {
+          "Fn::If": [
+            "CreateNewVpc",
+            {
+              "Ref": "VPC"
+            },
+            {
+              "Ref": "VpcId"
+            }
+          ]
+        },
+        "SecurityGroupEgress": [
+          {
+            "IpProtocol": -1,
+            "CidrIp": "0.0.0.0/0",
+            "Description": "Allow all outbound traffic"
+          }
+        ],
+        "Tags": [
+          {
+            "Key": "Name",
+            "Value": {
+              "Fn::Sub": "${ClusterName}-ecs-sg"
+            }
+          }
+        ]
+      }
+    },
+    "ECSLaunchTemplate": {
+      "Type": "AWS::EC2::LaunchTemplate",
+      "Properties": {
+        "LaunchTemplateName": {
+          "Fn::Sub": "${ClusterName}-launch-template"
+        },
+        "LaunchTemplateData": {
+          "ImageId": {
+            "Ref": "LatestECSOptimizedAMI"
+          },
+          "InstanceType": {
+            "Ref": "InstanceType"
+          },
+          "KeyName": {
+            "Fn::If": [
+              "HasKeyName",
+              {
+                "Ref": "KeyName"
+              },
+              {
+                "Ref": "AWS::NoValue"
+              }
+            ]
+          },
+          "IamInstanceProfile": {
+            "Arn": {
+              "Fn::GetAtt": [
+                "QualysECSInstanceProfile",
+                "Arn"
+              ]
+            }
+          },
+          "SecurityGroupIds": [
+            {
+              "Ref": "ECSSecurityGroup"
+            }
+          ],
+          "UserData": {
+            "Fn::Base64": {
+              "Fn::Sub": "#!/bin/bash\necho ECS_CLUSTER=${ECSCluster} >> /etc/ecs/ecs.config\necho ECS_ENABLE_CONTAINER_METADATA=true >> /etc/ecs/ecs.config\nyum update -y\nyum install -y amazon-ssm-agent\nsystemctl enable amazon-ssm-agent\nsystemctl start amazon-ssm-agent\n\n# Create required directories for Qualys container sensor\nmkdir -p /usr/local/qualys/sensor/data\nmkdir -p /etc/qualys\nmkdir -p /root/cert\nchmod 755 /usr/local/qualys/sensor/data\nchmod 755 /etc/qualys\nchmod 755 /root/cert\n\n# Create empty proxy certificate file if it doesn't exist\ntouch /root/cert/proxy-certificate.crt\nchmod 644 /root/cert/proxy-certificate.crt\n"
+            }
+          },
+          "TagSpecifications": [
+            {
+              "ResourceType": "instance",
+              "Tags": [
+                {
+                  "Key": "Name",
+                  "Value": {
+                    "Fn::Sub": "${ClusterName}-instance"
+                  }
+                }
+              ]
+            }
+          ]
+        }
+      }
+    },
+    "ECSAutoScalingGroup": {
+      "Type": "AWS::AutoScaling::AutoScalingGroup",
+      "DependsOn": "ECSCluster",
+      "Properties": {
+        "AutoScalingGroupName": {
+          "Fn::Sub": "${ClusterName}-asg"
+        },
+        "VPCZoneIdentifier": {
+          "Fn::If": [
+            "CreateNewVpc",
+            [
+              {
+                "Ref": "PrivateSubnet1"
+              },
+              {
+                "Ref": "PrivateSubnet2"
+              }
+            ],
+            {
+              "Ref": "SubnetIds"
+            }
+          ]
+        },
+        "LaunchTemplate": {
+          "LaunchTemplateId": {
+            "Ref": "ECSLaunchTemplate"
+          },
+          "Version": {
+            "Fn::GetAtt": [
+              "ECSLaunchTemplate",
+              "LatestVersionNumber"
+            ]
+          }
+        },
+        "MinSize": {
+          "Ref": "MinSize"
+        },
+        "MaxSize": {
+          "Ref": "MaxSize"
+        },
+        "DesiredCapacity": {
+          "Ref": "DesiredCapacity"
+        },
+        "HealthCheckType": "EC2",
+        "HealthCheckGracePeriod": 300,
+        "Tags": [
+          {
+            "Key": "Name",
+            "Value": {
+              "Fn::Sub": "${ClusterName}-asg"
+            },
+            "PropagateAtLaunch": true
+          },
+          {
+            "Key": "ECSCluster",
+            "Value": {
+              "Ref": "ClusterName"
+            },
+            "PropagateAtLaunch": true
+          }
+        ]
+      },
+      "UpdatePolicy": {
+        "AutoScalingRollingUpdate": {
+          "MinInstancesInService": 1,
+          "MaxBatchSize": 1,
+          "WaitOnResourceSignals": false
+        }
+      }
+    },
+    "QualysLogGroup": {
+      "Type": "AWS::Logs::LogGroup",
+      "Properties": {
+        "LogGroupName": {
+          "Fn::Sub": "/ecs/${ClusterName}/qualys-container-sensor"
+        },
+        "RetentionInDays": 7
+      }
+    },
+    "QualysTaskDefinition": {
+      "Type": "AWS::ECS::TaskDefinition",
+      "Properties": {
+        "Family": {
+          "Fn::Sub": "${ClusterName}-qualys-container-sensor"
+        },
+        "TaskRoleArn": {
+          "Ref": "QualysECSTaskRole"
+        },
+        "ExecutionRoleArn": {
+          "Ref": "QualysECSExecutionRole"
+        },
+        "NetworkMode": "bridge",
+        "RequiresCompatibilities": [
+          "EC2"
+        ],
+        "Cpu": "256",
+        "Memory": "512",
+        "Volumes": [
+          {
+            "Name": "persistent_volume",
+            "Host": {
+              "SourcePath": "/usr/local/qualys/sensor/data"
+            }
+          },
+          {
+            "Name": "var_run",
+            "Host": {
+              "SourcePath": "/var/run/docker.sock"
+            }
+          },
+          {
+            "Name": "etc_qualys",
+            "Host": {
+              "SourcePath": "/etc/qualys"
+            }
+          },
+          {
+            "Name": "proxy-cert-path",
+            "Host": {
+              "SourcePath": "/root/cert/proxy-certificate.crt"
+            }
+          },
+          {
+            "Name": "docker-root-dir",
+            "Host": {
+              "SourcePath": "/var/lib/docker"
+            }
+          }
+        ],
+        "ContainerDefinitions": [
+          {
+            "Name": "qualys-container-sensor",
+            "Image": {
+              "Ref": "QualysImage"
+            },
+            "Essential": true,
+            "Memory": 512,
+            "Cpu": 10,
+            "Command": [
+              "--ecs-mode",
+              "--registry-sensor",
+              "--storage-driver-type",
+              "overlay2",
+              "--perform-sca-scan",
+              "--optimize-image-scans"
+            ],
+            "Environment": [
+              {
+                "Name": "ACTIVATIONID",
+                "Value": {
+                  "Ref": "QualysActivationId"
+                }
+              },
+              {
+                "Name": "CUSTOMERID",
+                "Value": {
+                  "Ref": "QualysCustomerId"
+                }
+              },
+              {
+                "Name": "POD_URL",
+                "Value": {
+                  "Ref": "QualysPodUrl"
+                }
+              }
+            ],
+            "MountPoints": [
+              {
+                "SourceVolume": "persistent_volume",
+                "ContainerPath": "/usr/local/qualys/qpa/data"
+              },
+              {
+                "SourceVolume": "var_run",
+                "ContainerPath": "/var/run/docker.sock"
+              },
+              {
+                "SourceVolume": "etc_qualys",
+                "ContainerPath": "/usr/local/qualys/qpa/data/conf/agent-data"
+              },
+              {
+                "SourceVolume": "proxy-cert-path",
+                "ContainerPath": "/etc/qualys/qpa/cert/custom-ca.crt"
+              },
+              {
+                "SourceVolume": "docker-root-dir",
+                "ContainerPath": "/var/lib/docker",
+                "ReadOnly": true
+              }
+            ],
+            "LogConfiguration": {
+              "LogDriver": "awslogs",
+              "Options": {
+                "awslogs-group": {
+                  "Ref": "QualysLogGroup"
+                },
+                "awslogs-region": {
+                  "Ref": "AWS::Region"
+                },
+                "awslogs-stream-prefix": "qualys"
+              }
+            }
+          }
+        ],
+        "Tags": [
+          {
+            "Key": "Name",
+            "Value": {
+              "Fn::Sub": "${ClusterName}-qualys-task"
+            }
+          }
+        ]
+      }
+    },
+    "QualysService": {
+      "Type": "AWS::ECS::Service",
+      "Properties": {
+        "ServiceName": {
+          "Fn::Sub": "${ClusterName}-qualys-container-service"
+        },
+        "Cluster": {
+          "Ref": "ECSCluster"
+        },
+        "TaskDefinition": {
+          "Ref": "QualysTaskDefinition"
+        },
+        "DesiredCount": {
+          "Ref": "DesiredCapacity"
+        },
+        "LaunchType": "EC2",
+        "PlacementStrategy": [
+          {
+            "Type": "spread",
+            "Field": "instanceId"
+          },
+          {
+            "Type": "spread", 
+            "Field": "attribute:ecs.availability-zone"
+          }
+        ],
+        "DeploymentConfiguration": {
+          "MaximumPercent": 200,
+          "MinimumHealthyPercent": 50
+        },
+        "Tags": [
+          {
+            "Key": "Name",
+            "Value": {
+              "Fn::Sub": "${ClusterName}-qualys-container-service"
+            }
+          }
+        ]
+      }
+    }
+  },
+  "Outputs": {
+    "ClusterName": {
+      "Description": "Name of the ECS cluster",
+      "Value": {
+        "Ref": "ECSCluster"
+      },
+      "Export": {
+        "Name": {
+          "Fn::Sub": "${AWS::StackName}-ClusterName"
+        }
+      }
+    },
+    "ClusterArn": {
+      "Description": "ARN of the ECS cluster",
+      "Value": {
+        "Fn::GetAtt": [
+          "ECSCluster",
+          "Arn"
+        ]
+      },
+      "Export": {
+        "Name": {
+          "Fn::Sub": "${AWS::StackName}-ClusterArn"
+        }
+      }
+    },
+    "VpcId": {
+      "Description": "VPC ID used for the deployment",
+      "Value": {
+        "Fn::If": [
+          "CreateNewVpc",
+          {
+            "Ref": "VPC"
+          },
+          {
+            "Ref": "VpcId"
+          }
+        ]
+      },
+      "Export": {
+        "Name": {
+          "Fn::Sub": "${AWS::StackName}-VpcId"
+        }
+      }
+    },
+    "PrivateSubnetIds": {
+      "Description": "Private subnet IDs used for ECS instances",
+      "Value": {
+        "Fn::If": [
+          "CreateNewVpc",
+          {
+            "Fn::Sub": "${PrivateSubnet1},${PrivateSubnet2}"
+          },
+          {
+            "Fn::Join": [
+              ",",
+              {
+                "Ref": "SubnetIds"
+              }
+            ]
+          }
+        ]
+      },
+      "Export": {
+        "Name": {
+          "Fn::Sub": "${AWS::StackName}-PrivateSubnetIds"
+        }
+      }
+    },
+    "ECSSecurityGroupId": {
+      "Description": "Security Group ID for ECS instances",
+      "Value": {
+        "Ref": "ECSSecurityGroup"
+      },
+      "Export": {
+        "Name": {
+          "Fn::Sub": "${AWS::StackName}-ECSSecurityGroup"
+        }
+      }
+    },
+    "TaskDefinitionArn": {
+      "Description": "ARN of the Qualys container sensor task definition",
+      "Value": {
+        "Ref": "QualysTaskDefinition"
+      },
+      "Export": {
+        "Name": {
+          "Fn::Sub": "${AWS::StackName}-TaskDefinitionArn"
+        }
+      }
+    },
+    "ServiceName": {
+      "Description": "Name of the Qualys container sensor ECS service",
+      "Value": {
+        "Ref": "QualysService"
+      },
+      "Export": {
+        "Name": {
+          "Fn::Sub": "${AWS::StackName}-ServiceName"
+        }
+      }
+    },
+    "AutoScalingGroupName": {
+      "Description": "Name of the Auto Scaling Group",
+      "Value": {
+        "Ref": "ECSAutoScalingGroup"
+      },
+      "Export": {
+        "Name": {
+          "Fn::Sub": "${AWS::StackName}-AutoScalingGroup"
+        }
+      }
+    },
+    "QualysImage": {
+      "Description": "Qualys container image being used",
+      "Value": {
+        "Ref": "QualysImage"
+      }
+    }
+  }
+}
