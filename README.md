@@ -100,22 +100,6 @@ aws cloudformation create-stack \
 | `TaskDefinitionArn` | Qualys task definition ARN |
 | `ServiceName` | ECS service name |
 
-## Verification Commands
-
-```bash
-# Check cluster status
-aws ecs describe-clusters --clusters qualys-registry-cluster --include STATISTICS
-
-# Check running tasks
-aws ecs list-tasks --cluster qualys-registry-cluster --desired-status RUNNING
-
-# Check service status  
-aws ecs describe-services --cluster qualys-registry-cluster --services qualys-registry-cluster-qualys-container-service
-
-# Check logs
-aws logs describe-log-streams --log-group-name /ecs/qualys-registry-cluster/qualys-container-sensor
-```
-
 ## Requirements
 
 - Private ECR repository with Qualys container image
