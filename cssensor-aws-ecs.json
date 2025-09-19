@@ -731,7 +731,7 @@
           ],
           "UserData": {
             "Fn::Base64": {
-              "Fn::Sub": "#!/bin/bash\necho ECS_CLUSTER=${ECSCluster} >> /etc/ecs/ecs.config\necho ECS_ENABLE_CONTAINER_METADATA=true >> /etc/ecs/ecs.config\nyum update -y\nyum install -y amazon-ssm-agent\nsystemctl enable amazon-ssm-agent\nsystemctl start amazon-ssm-agent\n\n# Create required directories for Qualys container sensor\nmkdir -p /usr/local/qualys/sensor/data\nmkdir -p /etc/qualys\nmkdir -p /root/cert\nchmod 755 /usr/local/qualys/sensor/data\nchmod 755 /etc/qualys\nchmod 755 /root/cert\n\n# Create empty proxy certificate file if it doesn't exist\ntouch /root/cert/proxy-certificate.crt\nchmod 644 /root/cert/proxy-certificate.crt\n"
+              "Fn::Sub": "#!/bin/bash\necho ECS_CLUSTER=${ECSCluster} >> /etc/ecs/ecs.config\necho ECS_ENABLE_CONTAINER_METADATA=true >> /etc/ecs/ecs.config\nyum update -y\nyum install -y amazon-ssm-agent\nsystemctl enable amazon-ssm-agent\nsystemctl start amazon-ssm-agent\n"
             }
           },
           "TagSpecifications": [
@@ -849,27 +849,9 @@
         "Memory": "512",
         "Volumes": [
           {
-            "Name": "persistent_volume",
-            "Host": {
-              "SourcePath": "/usr/local/qualys/sensor/data"
-            }
-          },
-          {
             "Name": "var_run",
             "Host": {
               "SourcePath": "/var/run/docker.sock"
-            }
-          },
-          {
-            "Name": "etc_qualys",
-            "Host": {
-              "SourcePath": "/etc/qualys"
-            }
-          },
-          {
-            "Name": "proxy-cert-path",
-            "Host": {
-              "SourcePath": "/root/cert/proxy-certificate.crt"
             }
           },
           {
@@ -894,7 +876,9 @@
               "--storage-driver-type",
               "overlay2",
               "--perform-sca-scan",
-              "--optimize-image-scans"
+              "--optimize-image-scans",
+              "--sensor-without-persistent-storage",
+              "--enable-console-logs"
             ],
             "Environment": [
               {
@@ -918,20 +902,8 @@
             ],
             "MountPoints": [
               {
-                "SourceVolume": "persistent_volume",
-                "ContainerPath": "/usr/local/qualys/qpa/data"
-              },
-              {
                 "SourceVolume": "var_run",
                 "ContainerPath": "/var/run/docker.sock"
-              },
-              {
-                "SourceVolume": "etc_qualys",
-                "ContainerPath": "/usr/local/qualys/qpa/data/conf/agent-data"
-              },
-              {
-                "SourceVolume": "proxy-cert-path",
-                "ContainerPath": "/etc/qualys/qpa/cert/custom-ca.crt"
               },
               {
                 "SourceVolume": "docker-root-dir",
