@@ -38,7 +38,7 @@ aws cloudformation create-stack \
     ParameterKey=QualysPodUrl,ParameterValue=QUALYS_POD_URL \
     ParameterKey=QualysActivationId,ParameterValue=YOUR_ACTIVATION_ID \
     ParameterKey=QualysCustomerId,ParameterValue=YOUR_CUSTOMER_ID \
-  --capabilities CAPABILITY_IAM
+  --capabilities CAPABILITY_NAMED_IAM
 ```
 
 ### Console Deployment
