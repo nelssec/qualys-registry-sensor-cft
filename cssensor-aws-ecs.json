@@ -621,31 +621,6 @@
             }
           ]
         },
-        "Policies": [
-          {
-            "PolicyName": "QualysContainerSensorPolicy",
-            "PolicyDocument": {
-              "Version": "2012-10-17",
-              "Statement": [
-                {
-                  "Effect": "Allow",
-                  "Action": [
-                    "ecr:GetAuthorizationToken",
-                    "ecr:BatchCheckLayerAvailability",
-                    "ecr:GetDownloadUrlForLayer",
-                    "ecr:BatchGetImage",
-                    "ecr:DescribeRepositories",
-                    "ecr:DescribeImages",
-                    "logs:CreateLogGroup",
-                    "logs:CreateLogStream",
-                    "logs:PutLogEvents"
-                  ],
-                  "Resource": "*"
-                }
-              ]
-            }
-          }
-        ],
         "Tags": [
           {
             "Key": "Name",
@@ -674,28 +649,6 @@
         },
         "ManagedPolicyArns": [
           "arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy"
-        ],
-        "Policies": [
-          {
-            "PolicyName": "QualysECRAccess",
-            "PolicyDocument": {
-              "Version": "2012-10-17",
-              "Statement": [
-                {
-                  "Effect": "Allow",
-                  "Action": [
-                    "ecr:GetAuthorizationToken",
-                    "ecr:BatchCheckLayerAvailability",
-                    "ecr:GetDownloadUrlForLayer",
-                    "ecr:BatchGetImage",
-                    "ecr:DescribeRepositories",
-                    "ecr:DescribeImages"
-                  ],
-                  "Resource": "*"
-                }
-              ]
-            }
-          }
         ],
         "Tags": [
           {
@@ -1022,13 +975,11 @@
         "TaskDefinition": {
           "Ref": "QualysTaskDefinition"
         },
-        "DesiredCount": {
-          "Ref": "DesiredCapacity"
-        },
         "LaunchType": "EC2",
+        "SchedulingStrategy": "DAEMON",
         "DeploymentConfiguration": {
-          "MaximumPercent": 200,
-          "MinimumHealthyPercent": 50
+          "MaximumPercent": 100,
+          "MinimumHealthyPercent": 0
         },
         "Tags": [
           {
