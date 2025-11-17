@@ -119,6 +119,27 @@ resource "google_compute_subnetwork" "subnet" {
   }
 }
 
+# Cloud Router for NAT
+resource "google_compute_router" "router" {
+  name    = "${var.cluster_name}-router"
+  region  = var.region
+  network = google_compute_network.vpc.id
+}
+
+# Cloud NAT for outbound internet access
+resource "google_compute_router_nat" "nat" {
+  name                               = "${var.cluster_name}-nat"
+  router                             = google_compute_router.router.name
+  region                             = google_compute_router.router.region
+  nat_ip_allocate_option             = "AUTO_ONLY"
+  source_subnetwork_ip_ranges_to_nat = "ALL_SUBNETWORKS_ALL_IP_RANGES"
+
+  log_config {
+    enable = true
+    filter = "ERRORS_ONLY"
+  }
+}
+
 # GKE Cluster
 resource "google_container_cluster" "primary" {
   name     = var.cluster_name
@@ -143,6 +164,20 @@ resource "google_container_cluster" "primary" {
   ip_allocation_policy {
     cluster_secondary_range_name  = "pods"
     services_secondary_range_name = "services"
+  }
+
+  # Private cluster configuration
+  private_cluster_config {
+    enable_private_nodes    = true
+    enable_private_endpoint = false
+    master_ipv4_cidr_block  = "10.3.0.0/28"
+  }
+
+  master_authorized_networks_config {
+    cidr_blocks {
+      cidr_block   = "0.0.0.0/0"
+      display_name = "All networks"
+    }
   }
 
   # Enable Workload Identity
@@ -207,7 +242,6 @@ resource "google_container_node_pool" "primary_nodes" {
     preemptible  = false
     machine_type = var.machine_type
 
-    # Google recommends custom service accounts that have cloud-platform scope
     service_account = google_service_account.gke_sa.email
     oauth_scopes = [
       "https://www.googleapis.com/auth/cloud-platform"

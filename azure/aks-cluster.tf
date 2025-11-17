@@ -129,6 +129,43 @@ resource "azurerm_subnet" "aks_subnet" {
   address_prefixes     = ["10.1.0.0/20"]
 }
 
+# Public IP for NAT Gateway
+resource "azurerm_public_ip" "nat" {
+  name                = "${var.cluster_name}-nat-ip"
+  location            = azurerm_resource_group.rg.location
+  resource_group_name = azurerm_resource_group.rg.name
+  allocation_method   = "Static"
+  sku                 = "Standard"
+
+  tags = {
+    Environment = "Production"
+  }
+}
+
+# NAT Gateway for outbound internet access
+resource "azurerm_nat_gateway" "nat" {
+  name                = "${var.cluster_name}-nat"
+  location            = azurerm_resource_group.rg.location
+  resource_group_name = azurerm_resource_group.rg.name
+  sku_name            = "Standard"
+
+  tags = {
+    Environment = "Production"
+  }
+}
+
+# Associate NAT Gateway with Public IP
+resource "azurerm_nat_gateway_public_ip_association" "nat" {
+  nat_gateway_id       = azurerm_nat_gateway.nat.id
+  public_ip_address_id = azurerm_public_ip.nat.id
+}
+
+# Associate NAT Gateway with AKS Subnet
+resource "azurerm_subnet_nat_gateway_association" "aks" {
+  subnet_id      = azurerm_subnet.aks_subnet.id
+  nat_gateway_id = azurerm_nat_gateway.nat.id
+}
+
 # AKS Cluster
 resource "azurerm_kubernetes_cluster" "aks" {
   name                = var.cluster_name
@@ -161,6 +198,7 @@ resource "azurerm_kubernetes_cluster" "aks" {
     network_plugin    = "azure"
     network_policy    = "azure"
     load_balancer_sku = "standard"
+    outbound_type     = "userAssignedNATGateway"
     service_cidr      = "10.2.0.0/16"
     dns_service_ip    = "10.2.0.10"
   }
@@ -175,7 +213,7 @@ resource "azurerm_kubernetes_cluster" "aks" {
   }
 
   depends_on = [
-    azurerm_subnet.aks_subnet
+    azurerm_subnet_nat_gateway_association.aks
   ]
 }
 
