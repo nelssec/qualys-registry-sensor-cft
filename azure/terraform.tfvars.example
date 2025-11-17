@@ -1,0 +1,25 @@
+# Azure AKS Configuration for Qualys Registry Sensor
+
+# Resource Group
+resource_group_name = "qualys-registry-sensor-rg"
+location            = "eastus"  # Options: eastus, westus2, centralus, northeurope, westeurope, etc.
+
+# AKS Cluster
+cluster_name       = "qualys-registry-cluster"
+kubernetes_version = "1.28"
+
+# Node Pool Configuration
+node_count   = 2
+node_vm_size = "Standard_D2s_v3"  # Options: Standard_D2s_v3, Standard_D4s_v3, Standard_F4s_v2, etc.
+
+# Azure Container Registry
+create_acr = true
+acr_name   = ""  # Leave empty for auto-generated name, or specify a globally unique name
+
+# Qualys Configuration (REQUIRED - keep these secret!)
+qualys_activation_id = "YOUR_ACTIVATION_ID"
+qualys_customer_id   = "YOUR_CUSTOMER_ID"
+qualys_pod_url       = "https://your-qualys-platform.qualys.com"
+
+# Optional: Specify custom Qualys image if not using ACR
+# qualys_image = "your-registry.azurecr.io/qualys/qcs-sensor:latest"
