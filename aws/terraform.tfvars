@@ -7,9 +7,7 @@ min_size         = 1
 max_size         = 3
 desired_capacity = 2
 
-create_vpc = false
-vpc_id     = ""
-subnet_ids = []
+create_vpc = true
 
 key_name = ""
 

@@ -51,7 +51,7 @@ variable "desired_capacity" {
 variable "create_vpc" {
   description = "Create new VPC with private subnets and NAT gateway"
   type        = bool
-  default     = false
+  default     = true
 }
 
 variable "vpc_id" {
