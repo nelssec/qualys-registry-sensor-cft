@@ -6,8 +6,10 @@ Deploy Qualys Container Registry Sensor across AWS, Azure, and GCP with Terrafor
 
 Terraform configurations for deploying Qualys Container Registry Sensor on:
 - **AWS ECS**: EC2-based ECS cluster with optional VPC creation
-- **Azure AKS**: Managed Kubernetes with Azure Container Registry
-- **GCP GKE**: Managed Kubernetes with Google Container Registry
+- **Azure**: VM Scale Sets with Docker
+- **GCP**: Managed Instance Groups with Container-Optimized OS
+
+All deployments use simple VM-based infrastructure running Docker containers. No Kubernetes complexity.
 
 ---
 
@@ -73,15 +75,15 @@ terraform output task_definition_arn
 
 ---
 
-## Azure AKS Deployment
+## Azure VM Scale Sets Deployment
 
-Terraform configuration for AKS cluster with managed node pools and optional ACR.
+Terraform configuration for VM Scale Sets running Docker containers.
 
 ### Prerequisites
 
 - Azure CLI configured with valid subscription
 - Terraform >= 1.0
-- kubectl
+- Qualys container image in ACR or external registry
 
 ### Configuration
 
@@ -91,11 +93,12 @@ Edit `azure/terraform.tfvars`:
 resource_group_name = "qualys-registry-sensor-rg"
 location            = "eastus"
 cluster_name        = "qualys-registry-cluster"
-node_count          = 2
-node_vm_size        = "Standard_D2s_v3"
+instance_count      = 2
+vm_size             = "Standard_D2s_v3"
 
 create_acr = true
 
+qualys_image         = "qualysregistryclusteracr.azurecr.io/qualys/qcs-sensor:latest"
 qualys_activation_id = "YOUR_ACTIVATION_ID"
 qualys_customer_id   = "YOUR_CUSTOMER_ID"
 qualys_pod_url       = "https://qualysapi.qualys.com"
@@ -110,58 +113,35 @@ terraform plan
 terraform apply
 ```
 
-### Configure kubectl
-
-```bash
-az aks get-credentials \
-  --resource-group qualys-registry-sensor-rg \
-  --name qualys-registry-cluster
-```
-
-### Create Namespace and Secrets
-
-Edit `kubernetes/qualys-namespace-secret.yaml` with your credentials, then:
-
-```bash
-kubectl apply -f ../kubernetes/qualys-namespace-secret.yaml
-```
-
-### Deploy Sensor DaemonSet
-
-Update image in `kubernetes/qualys-daemonset.yaml` with your ACR location, then:
-
-```bash
-kubectl apply -f ../kubernetes/qualys-daemonset.yaml
-kubectl get pods -n qualys-sensor
-```
-
 ### Architecture
 
-- AKS cluster with auto-scaling node pools (1-10 nodes)
+- VM Scale Sets with Ubuntu 22.04 and Docker
 - VNet: 10.1.0.0/16 with dedicated subnet
+- NAT Gateway for secure outbound access
+- Network Security Group (HTTPS + DNS only)
 - Azure Container Registry for Qualys images
-- Log Analytics workspace for monitoring
-- DaemonSet deployment (one pod per node)
+- Managed identity for ACR pull access
+- Sensor runs as privileged Docker container on each VM
 
 ### Outputs
 
 ```bash
-terraform output aks_cluster_name
+terraform output vmss_name
 terraform output acr_login_server
-terraform output get_credentials_command
+terraform output qualys_image_location
 ```
 
 ---
 
-## GCP GKE Deployment
+## GCP Managed Instance Groups Deployment
 
-Terraform configuration for GKE regional cluster with multi-zone node pools.
+Terraform configuration for Managed Instance Groups using Container-Optimized OS.
 
 ### Prerequisites
 
 - Google Cloud SDK configured with valid project
 - Terraform >= 1.0
-- kubectl
+- Qualys container image in GCR or Artifact Registry
 
 ### Configuration
 
@@ -170,13 +150,13 @@ Edit `gcp/terraform.tfvars`:
 ```hcl
 project_id = "your-gcp-project-id"
 region     = "us-central1"
+zone       = "us-central1-a"
 
-cluster_name = "qualys-registry-cluster"
-node_count   = 1
-machine_type = "e2-standard-2"
+cluster_name   = "qualys-registry-cluster"
+instance_count = 2
+machine_type   = "e2-standard-2"
 
-create_gcr = true
-
+qualys_image         = "gcr.io/your-gcp-project-id/qualys/qcs-sensor:latest"
 qualys_activation_id = "YOUR_ACTIVATION_ID"
 qualys_customer_id   = "YOUR_CUSTOMER_ID"
 qualys_pod_url       = "https://qualysapi.qualys.com"
@@ -199,73 +179,64 @@ terraform plan
 terraform apply
 ```
 
-### Configure kubectl
-
-```bash
-gcloud container clusters get-credentials qualys-registry-cluster \
-  --region us-central1 \
-  --project YOUR_PROJECT_ID
-```
-
-### Create Namespace and Secrets
-
-Edit `kubernetes/qualys-namespace-secret.yaml` with your credentials, then:
-
-```bash
-kubectl apply -f ../kubernetes/qualys-namespace-secret.yaml
-```
-
-### Deploy Sensor DaemonSet
-
-Update image in `kubernetes/qualys-daemonset.yaml` with your GCR location, then:
-
-```bash
-kubectl apply -f ../kubernetes/qualys-daemonset.yaml
-kubectl get pods -n qualys-sensor
-```
-
 ### Architecture
 
-- Regional GKE cluster with multi-zone node pools
-- Custom VPC with dedicated subnet ranges
-- Google Container Registry for Qualys images
-- Cloud Monitoring and Logging integration
-- Workload Identity enabled
-- DaemonSet deployment (one pod per node)
+- Managed Instance Groups with Container-Optimized OS
+- Container declaration in instance template metadata
+- Custom VPC with dedicated subnet
+- Cloud NAT for secure outbound access
+- Firewall rules (HTTPS + DNS egress only)
+- Service account with minimal permissions
+- Auto-healing for instance health
+- One Qualys sensor container per VM
 
 ### Outputs
 
 ```bash
-terraform output cluster_name
-terraform output cluster_endpoint
-terraform output get_credentials_command
+terraform output mig_name
+terraform output network_name
+terraform output qualys_image_location
 ```
 
 ---
 
 ## Common Operations
 
-### View Sensor Logs
+### View Logs
 
+**AWS**:
 ```bash
-kubectl get pods -n qualys-sensor
-kubectl logs -n qualys-sensor -l app=qualys-container-sensor --tail=100
-kubectl logs -n qualys-sensor <pod-name> -f
+aws logs tail /ecs/qualys-registry-cluster/qualys-sensor --follow
+```
+
+**Azure**:
+```bash
+az vmss list-instances --resource-group qualys-registry-sensor-rg --name qualys-registry-cluster-vmss
+```
+
+**GCP**:
+```bash
+gcloud compute instances list --filter="name~'qualys-registry-cluster'"
+gcloud compute ssh qualys-registry-cluster-instance-XXXX --command="docker logs qualys-container-sensor"
 ```
 
 ### Update Sensor Image
 
+After pushing new image to registry:
+
+**AWS**:
 ```bash
-kubectl set image daemonset/qualys-container-sensor \
-  qualys-container-sensor=<new-image> \
-  -n qualys-sensor
+aws ecs update-service --cluster qualys-registry-cluster --service qualys-registry-cluster-qualys-sensor --force-new-deployment
 ```
 
-### Verify DaemonSet
-
+**Azure**:
 ```bash
-kubectl describe daemonset qualys-container-sensor -n qualys-sensor
-kubectl get secret qualys-credentials -n qualys-sensor
+az vmss update-instances --resource-group qualys-registry-sensor-rg --name qualys-registry-cluster-vmss --instance-ids '*'
+```
+
+**GCP**:
+```bash
+gcloud compute instance-groups managed rolling-action replace qualys-registry-cluster-mig --zone us-central1-a
 ```
 
 ---
@@ -276,21 +247,24 @@ kubectl get secret qualys-credentials -n qualys-sensor
 - Store Qualys credentials securely (AWS Secrets Manager, Azure Key Vault, GCP Secret Manager)
 - Never commit credentials to version control
 - Rotate credentials regularly
+- Credentials passed as environment variables to containers
 
 **Network**:
 - Sensors require outbound internet access to Qualys platform
-- Use private subnets with NAT gateway
-- Configure appropriate security groups and firewall rules
+- All deployments use private subnets/networks with NAT gateway
+- Security groups/firewall rules allow only HTTPS (443) and DNS (53) egress
+- No inbound access required
 
 **Permissions**:
-- Sensors require elevated capabilities for container scanning
-- Review required permissions before deployment
-- Follow principle of least privilege
+- AWS: Minimal ECS task execution permissions
+- Azure: AcrPull role for container registry access only
+- GCP: Minimal scopes (storage read-only, logging, monitoring)
+- All IAM roles/identities follow least privilege principle
 
-**Images**:
-- Store Qualys sensor images in private registries
-- Keep sensor images updated
-- Scan images for vulnerabilities
+**Container Security**:
+- Sensors run in privileged mode (required for Docker socket access)
+- Access to host Docker socket for container scanning
+- Isolated per VM - one sensor per instance
 
 ---
 

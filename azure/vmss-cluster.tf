@@ -25,27 +25,21 @@ variable "location" {
 }
 
 variable "cluster_name" {
-  description = "Name of the AKS cluster"
+  description = "Name of the VM Scale Set"
   type        = string
   default     = "qualys-registry-cluster"
 }
 
-variable "node_count" {
-  description = "Number of nodes in the default node pool"
+variable "instance_count" {
+  description = "Number of VM instances"
   type        = number
   default     = 2
 }
 
-variable "node_vm_size" {
-  description = "VM size for cluster nodes"
+variable "vm_size" {
+  description = "VM size for instances"
   type        = string
   default     = "Standard_D2s_v3"
-}
-
-variable "kubernetes_version" {
-  description = "Kubernetes version"
-  type        = string
-  default     = "1.28"
 }
 
 variable "create_acr" {
@@ -58,6 +52,11 @@ variable "acr_name" {
   description = "Name of the Azure Container Registry (must be globally unique)"
   type        = string
   default     = ""
+}
+
+variable "qualys_image" {
+  description = "Qualys container sensor image"
+  type        = string
 }
 
 variable "qualys_activation_id" {
@@ -77,13 +76,18 @@ variable "qualys_pod_url" {
   type        = string
 }
 
-variable "qualys_image" {
-  description = "Qualys container sensor image (will use ACR if created)"
+variable "qualys_https_proxy" {
+  description = "HTTPS proxy server (FQDN or IP:port)"
   type        = string
   default     = ""
 }
 
-# Resource Group
+variable "https_proxy" {
+  description = "Standard HTTPS proxy environment variable"
+  type        = string
+  default     = ""
+}
+
 resource "azurerm_resource_group" "rg" {
   name     = var.resource_group_name
   location = var.location
@@ -94,7 +98,6 @@ resource "azurerm_resource_group" "rg" {
   }
 }
 
-# Azure Container Registry (optional)
 resource "azurerm_container_registry" "acr" {
   count               = var.create_acr ? 1 : 0
   name                = var.acr_name != "" ? var.acr_name : replace("${var.cluster_name}acr", "-", "")
@@ -109,7 +112,6 @@ resource "azurerm_container_registry" "acr" {
   }
 }
 
-# Virtual Network
 resource "azurerm_virtual_network" "vnet" {
   name                = "${var.cluster_name}-vnet"
   location            = azurerm_resource_group.rg.location
@@ -121,9 +123,8 @@ resource "azurerm_virtual_network" "vnet" {
   }
 }
 
-# Network Security Group for AKS subnet
-resource "azurerm_network_security_group" "aks" {
-  name                = "${var.cluster_name}-aks-nsg"
+resource "azurerm_network_security_group" "vmss" {
+  name                = "${var.cluster_name}-vmss-nsg"
   location            = azurerm_resource_group.rg.location
   resource_group_name = azurerm_resource_group.rg.name
 
@@ -154,19 +155,6 @@ resource "azurerm_network_security_group" "aks" {
   }
 
   security_rule {
-    name                       = "AllowVnetInbound"
-    priority                   = 100
-    direction                  = "Inbound"
-    access                     = "Allow"
-    protocol                   = "*"
-    source_port_range          = "*"
-    destination_port_range     = "*"
-    source_address_prefix      = "VirtualNetwork"
-    destination_address_prefix = "VirtualNetwork"
-    description                = "Allow intra-VNet communication"
-  }
-
-  security_rule {
     name                       = "DenyAllInbound"
     priority                   = 4096
     direction                  = "Inbound"
@@ -176,7 +164,7 @@ resource "azurerm_network_security_group" "aks" {
     destination_port_range     = "*"
     source_address_prefix      = "*"
     destination_address_prefix = "*"
-    description                = "Deny all other inbound traffic"
+    description                = "Deny all inbound traffic"
   }
 
   tags = {
@@ -184,21 +172,18 @@ resource "azurerm_network_security_group" "aks" {
   }
 }
 
-# Subnet for AKS
-resource "azurerm_subnet" "aks_subnet" {
+resource "azurerm_subnet" "vmss_subnet" {
   name                 = "${var.cluster_name}-subnet"
   resource_group_name  = azurerm_resource_group.rg.name
   virtual_network_name = azurerm_virtual_network.vnet.name
   address_prefixes     = ["10.1.0.0/20"]
 }
 
-# Associate NSG with AKS Subnet
-resource "azurerm_subnet_network_security_group_association" "aks" {
-  subnet_id                 = azurerm_subnet.aks_subnet.id
-  network_security_group_id = azurerm_network_security_group.aks.id
+resource "azurerm_subnet_network_security_group_association" "vmss" {
+  subnet_id                 = azurerm_subnet.vmss_subnet.id
+  network_security_group_id = azurerm_network_security_group.vmss.id
 }
 
-# Public IP for NAT Gateway
 resource "azurerm_public_ip" "nat" {
   name                = "${var.cluster_name}-nat-ip"
   location            = azurerm_resource_group.rg.location
@@ -211,7 +196,6 @@ resource "azurerm_public_ip" "nat" {
   }
 }
 
-# NAT Gateway for outbound internet access
 resource "azurerm_nat_gateway" "nat" {
   name                = "${var.cluster_name}-nat"
   location            = azurerm_resource_group.rg.location
@@ -223,54 +207,112 @@ resource "azurerm_nat_gateway" "nat" {
   }
 }
 
-# Associate NAT Gateway with Public IP
 resource "azurerm_nat_gateway_public_ip_association" "nat" {
   nat_gateway_id       = azurerm_nat_gateway.nat.id
   public_ip_address_id = azurerm_public_ip.nat.id
 }
 
-# Associate NAT Gateway with AKS Subnet
-resource "azurerm_subnet_nat_gateway_association" "aks" {
-  subnet_id      = azurerm_subnet.aks_subnet.id
+resource "azurerm_subnet_nat_gateway_association" "vmss" {
+  subnet_id      = azurerm_subnet.vmss_subnet.id
   nat_gateway_id = azurerm_nat_gateway.nat.id
 }
 
-# AKS Cluster
-resource "azurerm_kubernetes_cluster" "aks" {
-  name                = var.cluster_name
+resource "azurerm_user_assigned_identity" "vmss" {
+  name                = "QualysRegistrySensorVMSS-Identity"
   location            = azurerm_resource_group.rg.location
   resource_group_name = azurerm_resource_group.rg.name
-  dns_prefix          = var.cluster_name
-  kubernetes_version  = var.kubernetes_version
+}
 
-  default_node_pool {
-    name                = "default"
-    node_count          = var.node_count
-    vm_size             = var.node_vm_size
-    vnet_subnet_id      = azurerm_subnet.aks_subnet.id
-    type                = "VirtualMachineScaleSets"
-    os_disk_size_gb     = 30
-    enable_auto_scaling = true
-    min_count           = 1
-    max_count           = 10
+resource "azurerm_role_assignment" "vmss_acr" {
+  count                = var.create_acr ? 1 : 0
+  principal_id         = azurerm_user_assigned_identity.vmss.principal_id
+  role_definition_name = "AcrPull"
+  scope                = azurerm_container_registry.acr[0].id
+}
 
-    upgrade_settings {
-      max_surge = "10%"
+locals {
+  env_vars = join(" ", concat(
+    [
+      "-e ACTIVATIONID='${var.qualys_activation_id}'",
+      "-e CUSTOMERID='${var.qualys_customer_id}'"
+    ],
+    var.qualys_pod_url != "" ? ["-e POD_URL='${var.qualys_pod_url}'"] : [],
+    var.qualys_https_proxy != "" ? ["-e qualys_https_proxy='${var.qualys_https_proxy}'"] : [],
+    var.https_proxy != "" ? ["-e https_proxy='${var.https_proxy}'"] : []
+  ))
+
+  custom_data = base64encode(<<-EOF
+#!/bin/bash
+set -e
+
+apt-get update
+apt-get install -y docker.io jq
+
+systemctl start docker
+systemctl enable docker
+
+mkdir -p /var/qualys/qpa/data/cert
+
+${var.create_acr ? "az login --identity --username ${azurerm_user_assigned_identity.vmss.client_id}" : ""}
+${var.create_acr ? "TOKEN=$(az acr login --name ${azurerm_container_registry.acr[0].name} --expose-token --output tsv --query accessToken)" : ""}
+${var.create_acr ? "docker login ${azurerm_container_registry.acr[0].login_server} -u 00000000-0000-0000-0000-000000000000 -p $TOKEN" : ""}
+
+docker run -d --restart=always \
+  --name qualys-container-sensor \
+  --privileged \
+  --net=host \
+  ${local.env_vars} \
+  -v /var/run/docker.sock:/var/run/docker.sock \
+  -v /var/qualys/qpa/data/cert:/usr/local/qualys/qpa/data/cert \
+  ${var.qualys_image}
+EOF
+  )
+}
+
+resource "azurerm_linux_virtual_machine_scale_set" "vmss" {
+  name                = "${var.cluster_name}-vmss"
+  location            = azurerm_resource_group.rg.location
+  resource_group_name = azurerm_resource_group.rg.name
+  sku                 = var.vm_size
+  instances           = var.instance_count
+  admin_username      = "qualysadmin"
+  upgrade_mode        = "Manual"
+
+  admin_ssh_key {
+    username   = "qualysadmin"
+    public_key = "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQC0g+ZgQHQo placeholder-key"
+  }
+
+  source_image_reference {
+    publisher = "Canonical"
+    offer     = "0001-com-ubuntu-server-jammy"
+    sku       = "22_04-lts-gen2"
+    version   = "latest"
+  }
+
+  os_disk {
+    caching              = "ReadWrite"
+    storage_account_type = "Premium_LRS"
+  }
+
+  network_interface {
+    name                      = "vmss-nic"
+    primary                   = true
+    network_security_group_id = azurerm_network_security_group.vmss.id
+
+    ip_configuration {
+      name      = "internal"
+      primary   = true
+      subnet_id = azurerm_subnet.vmss_subnet.id
     }
   }
 
   identity {
-    type = "SystemAssigned"
+    type         = "UserAssigned"
+    identity_ids = [azurerm_user_assigned_identity.vmss.id]
   }
 
-  network_profile {
-    network_plugin    = "azure"
-    network_policy    = "azure"
-    load_balancer_sku = "standard"
-    outbound_type     = "userAssignedNATGateway"
-    service_cidr      = "10.2.0.0/16"
-    dns_service_ip    = "10.2.0.10"
-  }
+  custom_data = local.custom_data
 
   tags = {
     Environment = "Production"
@@ -278,43 +320,30 @@ resource "azurerm_kubernetes_cluster" "aks" {
   }
 
   depends_on = [
-    azurerm_subnet_nat_gateway_association.aks,
-    azurerm_subnet_network_security_group_association.aks
+    azurerm_subnet_nat_gateway_association.vmss,
+    azurerm_subnet_network_security_group_association.vmss,
+    azurerm_role_assignment.vmss_acr
   ]
 }
 
-# Role assignment for AKS to pull from ACR
-resource "azurerm_role_assignment" "aks_acr" {
-  count                = var.create_acr ? 1 : 0
-  principal_id         = azurerm_kubernetes_cluster.aks.kubelet_identity[0].object_id
-  role_definition_name = "AcrPull"
-  scope                = azurerm_container_registry.acr[0].id
-}
-
-# Outputs
 output "resource_group_name" {
   value       = azurerm_resource_group.rg.name
   description = "Name of the resource group"
 }
 
-output "aks_cluster_name" {
-  value       = azurerm_kubernetes_cluster.aks.name
-  description = "Name of the AKS cluster"
+output "vmss_name" {
+  value       = azurerm_linux_virtual_machine_scale_set.vmss.name
+  description = "Name of the VM Scale Set"
 }
 
-output "aks_cluster_id" {
-  value       = azurerm_kubernetes_cluster.aks.id
-  description = "ID of the AKS cluster"
+output "vmss_id" {
+  value       = azurerm_linux_virtual_machine_scale_set.vmss.id
+  description = "ID of the VM Scale Set"
 }
 
 output "acr_login_server" {
   value       = var.create_acr ? azurerm_container_registry.acr[0].login_server : ""
   description = "Login server for Azure Container Registry"
-}
-
-output "get_credentials_command" {
-  value       = "az aks get-credentials --resource-group ${azurerm_resource_group.rg.name} --name ${azurerm_kubernetes_cluster.aks.name}"
-  description = "Command to get AKS credentials"
 }
 
 output "qualys_image_location" {
