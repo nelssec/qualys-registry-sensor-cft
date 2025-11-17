@@ -248,14 +248,11 @@ resource "google_container_cluster" "primary" {
 
   # Logging and monitoring
   logging_config {
-    enable_components = ["SYSTEM_COMPONENTS", "WORKLOADS"]
+    enable_components = ["SYSTEM_COMPONENTS"]
   }
 
   monitoring_config {
     enable_components = ["SYSTEM_COMPONENTS"]
-    managed_prometheus {
-      enabled = true
-    }
   }
 
   # Release channel for automatic updates
@@ -367,40 +364,6 @@ resource "google_project_service" "container" {
 resource "google_project_service" "compute" {
   service            = "compute.googleapis.com"
   disable_on_destroy = false
-}
-
-# Kubernetes provider configuration
-data "google_client_config" "default" {}
-
-provider "kubernetes" {
-  host                   = "https://${google_container_cluster.primary.endpoint}"
-  token                  = data.google_client_config.default.access_token
-  cluster_ca_certificate = base64decode(google_container_cluster.primary.master_auth[0].cluster_ca_certificate)
-}
-
-# Kubernetes namespace
-resource "kubernetes_namespace" "qualys_sensor" {
-  metadata {
-    name = "qualys-sensor"
-  }
-
-  depends_on = [google_container_node_pool.primary_nodes]
-}
-
-# Kubernetes secret for Qualys credentials
-resource "kubernetes_secret" "qualys_credentials" {
-  metadata {
-    name      = "qualys-credentials"
-    namespace = kubernetes_namespace.qualys_sensor.metadata[0].name
-  }
-
-  data = {
-    activation-id = var.qualys_activation_id
-    customer-id   = var.qualys_customer_id
-    pod-url       = var.qualys_pod_url
-  }
-
-  type = "Opaque"
 }
 
 # Outputs

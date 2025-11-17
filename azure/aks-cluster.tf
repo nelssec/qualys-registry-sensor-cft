@@ -272,10 +272,6 @@ resource "azurerm_kubernetes_cluster" "aks" {
     dns_service_ip    = "10.2.0.10"
   }
 
-  oms_agent {
-    log_analytics_workspace_id = azurerm_log_analytics_workspace.logs.id
-  }
-
   tags = {
     Environment = "Production"
     Purpose     = "Qualys Registry Sensor"
@@ -287,47 +283,12 @@ resource "azurerm_kubernetes_cluster" "aks" {
   ]
 }
 
-# Log Analytics Workspace
-resource "azurerm_log_analytics_workspace" "logs" {
-  name                = "${var.cluster_name}-logs"
-  location            = azurerm_resource_group.rg.location
-  resource_group_name = azurerm_resource_group.rg.name
-  sku                 = "PerGB2018"
-  retention_in_days   = 30
-
-  tags = {
-    Environment = "Production"
-  }
-}
-
 # Role assignment for AKS to pull from ACR
 resource "azurerm_role_assignment" "aks_acr" {
   count                = var.create_acr ? 1 : 0
   principal_id         = azurerm_kubernetes_cluster.aks.kubelet_identity[0].object_id
   role_definition_name = "AcrPull"
   scope                = azurerm_container_registry.acr[0].id
-}
-
-# Kubernetes Secret for Qualys credentials
-resource "null_resource" "qualys_secret" {
-  depends_on = [azurerm_kubernetes_cluster.aks]
-
-  provisioner "local-exec" {
-    command = <<-EOT
-      az aks get-credentials --resource-group ${azurerm_resource_group.rg.name} --name ${azurerm_kubernetes_cluster.aks.name} --overwrite-existing
-      kubectl create namespace qualys-sensor --dry-run=client -o yaml | kubectl apply -f -
-      kubectl create secret generic qualys-credentials \
-        --namespace qualys-sensor \
-        --from-literal=activation-id='${var.qualys_activation_id}' \
-        --from-literal=customer-id='${var.qualys_customer_id}' \
-        --from-literal=pod-url='${var.qualys_pod_url}' \
-        --dry-run=client -o yaml | kubectl apply -f -
-    EOT
-  }
-
-  triggers = {
-    cluster_id = azurerm_kubernetes_cluster.aks.id
-  }
 }
 
 # Outputs
