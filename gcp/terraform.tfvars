@@ -1,0 +1,18 @@
+project_id = "your-gcp-project-id"
+region     = "us-central1"
+
+cluster_name       = "qualys-registry-cluster"
+kubernetes_version = "1.28"
+
+network_name = "qualys-registry-network"
+subnet_name  = "qualys-registry-subnet"
+subnet_cidr  = "10.0.0.0/20"
+
+node_count   = 1
+machine_type = "e2-standard-2"
+
+create_gcr = true
+
+qualys_activation_id = "YOUR_ACTIVATION_ID"
+qualys_customer_id   = "YOUR_CUSTOMER_ID"
+qualys_pod_url       = "https://qualysapi.qualys.com"

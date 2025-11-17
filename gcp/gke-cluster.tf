@@ -119,6 +119,88 @@ resource "google_compute_subnetwork" "subnet" {
   }
 }
 
+# Cloud Router for NAT
+resource "google_compute_router" "router" {
+  name    = "${var.cluster_name}-router"
+  region  = var.region
+  network = google_compute_network.vpc.id
+}
+
+# Cloud NAT for outbound internet access
+resource "google_compute_router_nat" "nat" {
+  name                               = "${var.cluster_name}-nat"
+  router                             = google_compute_router.router.name
+  region                             = google_compute_router.router.region
+  nat_ip_allocate_option             = "AUTO_ONLY"
+  source_subnetwork_ip_ranges_to_nat = "ALL_SUBNETWORKS_ALL_IP_RANGES"
+
+  log_config {
+    enable = true
+    filter = "ERRORS_ONLY"
+  }
+}
+
+# Firewall rule for GKE internal traffic
+resource "google_compute_firewall" "gke_internal" {
+  name    = "${var.cluster_name}-allow-internal"
+  network = google_compute_network.vpc.name
+
+  allow {
+    protocol = "tcp"
+  }
+
+  allow {
+    protocol = "udp"
+  }
+
+  allow {
+    protocol = "icmp"
+  }
+
+  source_ranges = [
+    var.subnet_cidr,
+    "10.1.0.0/16",
+    "10.2.0.0/16",
+  ]
+
+  target_tags = ["qualys-registry-sensor"]
+}
+
+# Firewall rule for HTTPS egress
+resource "google_compute_firewall" "qualys_egress" {
+  name      = "${var.cluster_name}-allow-https-egress"
+  network   = google_compute_network.vpc.name
+  direction = "EGRESS"
+
+  allow {
+    protocol = "tcp"
+    ports    = ["443"]
+  }
+
+  destination_ranges = ["0.0.0.0/0"]
+  target_tags        = ["qualys-registry-sensor"]
+}
+
+# Firewall rule for DNS egress
+resource "google_compute_firewall" "dns_egress" {
+  name      = "${var.cluster_name}-allow-dns-egress"
+  network   = google_compute_network.vpc.name
+  direction = "EGRESS"
+
+  allow {
+    protocol = "udp"
+    ports    = ["53"]
+  }
+
+  allow {
+    protocol = "tcp"
+    ports    = ["53"]
+  }
+
+  destination_ranges = ["0.0.0.0/0"]
+  target_tags        = ["qualys-registry-sensor"]
+}
+
 # GKE Cluster
 resource "google_container_cluster" "primary" {
   name     = var.cluster_name
@@ -145,6 +227,20 @@ resource "google_container_cluster" "primary" {
     services_secondary_range_name = "services"
   }
 
+  # Private cluster configuration
+  private_cluster_config {
+    enable_private_nodes    = true
+    enable_private_endpoint = false
+    master_ipv4_cidr_block  = "10.3.0.0/28"
+  }
+
+  master_authorized_networks_config {
+    cidr_blocks {
+      cidr_block   = "0.0.0.0/0"
+      display_name = "All networks"
+    }
+  }
+
   # Enable Workload Identity
   workload_identity_config {
     workload_pool = "${var.project_id}.svc.id.goog"
@@ -152,14 +248,11 @@ resource "google_container_cluster" "primary" {
 
   # Logging and monitoring
   logging_config {
-    enable_components = ["SYSTEM_COMPONENTS", "WORKLOADS"]
+    enable_components = ["SYSTEM_COMPONENTS"]
   }
 
   monitoring_config {
     enable_components = ["SYSTEM_COMPONENTS"]
-    managed_prometheus {
-      enabled = true
-    }
   }
 
   # Release channel for automatic updates
@@ -207,10 +300,11 @@ resource "google_container_node_pool" "primary_nodes" {
     preemptible  = false
     machine_type = var.machine_type
 
-    # Google recommends custom service accounts that have cloud-platform scope
     service_account = google_service_account.gke_sa.email
     oauth_scopes = [
-      "https://www.googleapis.com/auth/cloud-platform"
+      "https://www.googleapis.com/auth/devstorage.read_only",
+      "https://www.googleapis.com/auth/logging.write",
+      "https://www.googleapis.com/auth/monitoring",
     ]
 
     labels = {
@@ -232,8 +326,8 @@ resource "google_container_node_pool" "primary_nodes" {
 
 # Service Account for GKE nodes
 resource "google_service_account" "gke_sa" {
-  account_id   = "${var.cluster_name}-sa"
-  display_name = "GKE Node Service Account for ${var.cluster_name}"
+  account_id   = "qualys-registry-sensor-gke-sa"
+  display_name = "Qualys Registry Sensor GKE Node Service Account"
 }
 
 # IAM bindings for the service account
@@ -255,6 +349,12 @@ resource "google_project_iam_member" "gke_sa_monitoring_viewer" {
   member  = "serviceAccount:${google_service_account.gke_sa.email}"
 }
 
+resource "google_project_iam_member" "gke_sa_artifact_registry_reader" {
+  project = var.project_id
+  role    = "roles/artifactregistry.reader"
+  member  = "serviceAccount:${google_service_account.gke_sa.email}"
+}
+
 # Enable required APIs
 resource "google_project_service" "container" {
   service            = "container.googleapis.com"
@@ -264,40 +364,6 @@ resource "google_project_service" "container" {
 resource "google_project_service" "compute" {
   service            = "compute.googleapis.com"
   disable_on_destroy = false
-}
-
-# Kubernetes provider configuration
-data "google_client_config" "default" {}
-
-provider "kubernetes" {
-  host                   = "https://${google_container_cluster.primary.endpoint}"
-  token                  = data.google_client_config.default.access_token
-  cluster_ca_certificate = base64decode(google_container_cluster.primary.master_auth[0].cluster_ca_certificate)
-}
-
-# Kubernetes namespace
-resource "kubernetes_namespace" "qualys_sensor" {
-  metadata {
-    name = "qualys-sensor"
-  }
-
-  depends_on = [google_container_node_pool.primary_nodes]
-}
-
-# Kubernetes secret for Qualys credentials
-resource "kubernetes_secret" "qualys_credentials" {
-  metadata {
-    name      = "qualys-credentials"
-    namespace = kubernetes_namespace.qualys_sensor.metadata[0].name
-  }
-
-  data = {
-    activation-id = var.qualys_activation_id
-    customer-id   = var.qualys_customer_id
-    pod-url       = var.qualys_pod_url
-  }
-
-  type = "Opaque"
 }
 
 # Outputs

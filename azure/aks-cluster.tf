@@ -121,12 +121,118 @@ resource "azurerm_virtual_network" "vnet" {
   }
 }
 
+# Network Security Group for AKS subnet
+resource "azurerm_network_security_group" "aks" {
+  name                = "${var.cluster_name}-aks-nsg"
+  location            = azurerm_resource_group.rg.location
+  resource_group_name = azurerm_resource_group.rg.name
+
+  security_rule {
+    name                       = "AllowHTTPSOutbound"
+    priority                   = 100
+    direction                  = "Outbound"
+    access                     = "Allow"
+    protocol                   = "Tcp"
+    source_port_range          = "*"
+    destination_port_range     = "443"
+    source_address_prefix      = "*"
+    destination_address_prefix = "*"
+    description                = "Allow HTTPS for Qualys platform and ACR"
+  }
+
+  security_rule {
+    name                       = "AllowDNSOutbound"
+    priority                   = 110
+    direction                  = "Outbound"
+    access                     = "Allow"
+    protocol                   = "Udp"
+    source_port_range          = "*"
+    destination_port_range     = "53"
+    source_address_prefix      = "*"
+    destination_address_prefix = "*"
+    description                = "Allow DNS queries"
+  }
+
+  security_rule {
+    name                       = "AllowVnetInbound"
+    priority                   = 100
+    direction                  = "Inbound"
+    access                     = "Allow"
+    protocol                   = "*"
+    source_port_range          = "*"
+    destination_port_range     = "*"
+    source_address_prefix      = "VirtualNetwork"
+    destination_address_prefix = "VirtualNetwork"
+    description                = "Allow intra-VNet communication"
+  }
+
+  security_rule {
+    name                       = "DenyAllInbound"
+    priority                   = 4096
+    direction                  = "Inbound"
+    access                     = "Deny"
+    protocol                   = "*"
+    source_port_range          = "*"
+    destination_port_range     = "*"
+    source_address_prefix      = "*"
+    destination_address_prefix = "*"
+    description                = "Deny all other inbound traffic"
+  }
+
+  tags = {
+    Environment = "Production"
+  }
+}
+
 # Subnet for AKS
 resource "azurerm_subnet" "aks_subnet" {
   name                 = "${var.cluster_name}-subnet"
   resource_group_name  = azurerm_resource_group.rg.name
   virtual_network_name = azurerm_virtual_network.vnet.name
   address_prefixes     = ["10.1.0.0/20"]
+}
+
+# Associate NSG with AKS Subnet
+resource "azurerm_subnet_network_security_group_association" "aks" {
+  subnet_id                 = azurerm_subnet.aks_subnet.id
+  network_security_group_id = azurerm_network_security_group.aks.id
+}
+
+# Public IP for NAT Gateway
+resource "azurerm_public_ip" "nat" {
+  name                = "${var.cluster_name}-nat-ip"
+  location            = azurerm_resource_group.rg.location
+  resource_group_name = azurerm_resource_group.rg.name
+  allocation_method   = "Static"
+  sku                 = "Standard"
+
+  tags = {
+    Environment = "Production"
+  }
+}
+
+# NAT Gateway for outbound internet access
+resource "azurerm_nat_gateway" "nat" {
+  name                = "${var.cluster_name}-nat"
+  location            = azurerm_resource_group.rg.location
+  resource_group_name = azurerm_resource_group.rg.name
+  sku_name            = "Standard"
+
+  tags = {
+    Environment = "Production"
+  }
+}
+
+# Associate NAT Gateway with Public IP
+resource "azurerm_nat_gateway_public_ip_association" "nat" {
+  nat_gateway_id       = azurerm_nat_gateway.nat.id
+  public_ip_address_id = azurerm_public_ip.nat.id
+}
+
+# Associate NAT Gateway with AKS Subnet
+resource "azurerm_subnet_nat_gateway_association" "aks" {
+  subnet_id      = azurerm_subnet.aks_subnet.id
+  nat_gateway_id = azurerm_nat_gateway.nat.id
 }
 
 # AKS Cluster
@@ -161,12 +267,9 @@ resource "azurerm_kubernetes_cluster" "aks" {
     network_plugin    = "azure"
     network_policy    = "azure"
     load_balancer_sku = "standard"
+    outbound_type     = "userAssignedNATGateway"
     service_cidr      = "10.2.0.0/16"
     dns_service_ip    = "10.2.0.10"
-  }
-
-  oms_agent {
-    log_analytics_workspace_id = azurerm_log_analytics_workspace.logs.id
   }
 
   tags = {
@@ -175,21 +278,9 @@ resource "azurerm_kubernetes_cluster" "aks" {
   }
 
   depends_on = [
-    azurerm_subnet.aks_subnet
+    azurerm_subnet_nat_gateway_association.aks,
+    azurerm_subnet_network_security_group_association.aks
   ]
-}
-
-# Log Analytics Workspace
-resource "azurerm_log_analytics_workspace" "logs" {
-  name                = "${var.cluster_name}-logs"
-  location            = azurerm_resource_group.rg.location
-  resource_group_name = azurerm_resource_group.rg.name
-  sku                 = "PerGB2018"
-  retention_in_days   = 30
-
-  tags = {
-    Environment = "Production"
-  }
 }
 
 # Role assignment for AKS to pull from ACR
@@ -198,28 +289,6 @@ resource "azurerm_role_assignment" "aks_acr" {
   principal_id         = azurerm_kubernetes_cluster.aks.kubelet_identity[0].object_id
   role_definition_name = "AcrPull"
   scope                = azurerm_container_registry.acr[0].id
-}
-
-# Kubernetes Secret for Qualys credentials
-resource "null_resource" "qualys_secret" {
-  depends_on = [azurerm_kubernetes_cluster.aks]
-
-  provisioner "local-exec" {
-    command = <<-EOT
-      az aks get-credentials --resource-group ${azurerm_resource_group.rg.name} --name ${azurerm_kubernetes_cluster.aks.name} --overwrite-existing
-      kubectl create namespace qualys-sensor --dry-run=client -o yaml | kubectl apply -f -
-      kubectl create secret generic qualys-credentials \
-        --namespace qualys-sensor \
-        --from-literal=activation-id='${var.qualys_activation_id}' \
-        --from-literal=customer-id='${var.qualys_customer_id}' \
-        --from-literal=pod-url='${var.qualys_pod_url}' \
-        --dry-run=client -o yaml | kubectl apply -f -
-    EOT
-  }
-
-  triggers = {
-    cluster_id = azurerm_kubernetes_cluster.aks.id
-  }
 }
 
 # Outputs
