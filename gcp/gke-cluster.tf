@@ -140,6 +140,67 @@ resource "google_compute_router_nat" "nat" {
   }
 }
 
+# Firewall rule for GKE internal traffic
+resource "google_compute_firewall" "gke_internal" {
+  name    = "${var.cluster_name}-allow-internal"
+  network = google_compute_network.vpc.name
+
+  allow {
+    protocol = "tcp"
+  }
+
+  allow {
+    protocol = "udp"
+  }
+
+  allow {
+    protocol = "icmp"
+  }
+
+  source_ranges = [
+    var.subnet_cidr,
+    "10.1.0.0/16",
+    "10.2.0.0/16",
+  ]
+
+  target_tags = ["qualys-registry-sensor"]
+}
+
+# Firewall rule for HTTPS egress
+resource "google_compute_firewall" "qualys_egress" {
+  name      = "${var.cluster_name}-allow-https-egress"
+  network   = google_compute_network.vpc.name
+  direction = "EGRESS"
+
+  allow {
+    protocol = "tcp"
+    ports    = ["443"]
+  }
+
+  destination_ranges = ["0.0.0.0/0"]
+  target_tags        = ["qualys-registry-sensor"]
+}
+
+# Firewall rule for DNS egress
+resource "google_compute_firewall" "dns_egress" {
+  name      = "${var.cluster_name}-allow-dns-egress"
+  network   = google_compute_network.vpc.name
+  direction = "EGRESS"
+
+  allow {
+    protocol = "udp"
+    ports    = ["53"]
+  }
+
+  allow {
+    protocol = "tcp"
+    ports    = ["53"]
+  }
+
+  destination_ranges = ["0.0.0.0/0"]
+  target_tags        = ["qualys-registry-sensor"]
+}
+
 # GKE Cluster
 resource "google_container_cluster" "primary" {
   name     = var.cluster_name
@@ -244,7 +305,9 @@ resource "google_container_node_pool" "primary_nodes" {
 
     service_account = google_service_account.gke_sa.email
     oauth_scopes = [
-      "https://www.googleapis.com/auth/cloud-platform"
+      "https://www.googleapis.com/auth/devstorage.read_only",
+      "https://www.googleapis.com/auth/logging.write",
+      "https://www.googleapis.com/auth/monitoring",
     ]
 
     labels = {
@@ -266,8 +329,8 @@ resource "google_container_node_pool" "primary_nodes" {
 
 # Service Account for GKE nodes
 resource "google_service_account" "gke_sa" {
-  account_id   = "${var.cluster_name}-sa"
-  display_name = "GKE Node Service Account for ${var.cluster_name}"
+  account_id   = "qualys-registry-sensor-gke-sa"
+  display_name = "Qualys Registry Sensor GKE Node Service Account"
 }
 
 # IAM bindings for the service account
@@ -286,6 +349,12 @@ resource "google_project_iam_member" "gke_sa_metric_writer" {
 resource "google_project_iam_member" "gke_sa_monitoring_viewer" {
   project = var.project_id
   role    = "roles/monitoring.viewer"
+  member  = "serviceAccount:${google_service_account.gke_sa.email}"
+}
+
+resource "google_project_iam_member" "gke_sa_artifact_registry_reader" {
+  project = var.project_id
+  role    = "roles/artifactregistry.reader"
   member  = "serviceAccount:${google_service_account.gke_sa.email}"
 }
 

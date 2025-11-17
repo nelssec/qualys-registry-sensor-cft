@@ -220,19 +220,28 @@ resource "aws_route_table_association" "private" {
 }
 
 resource "aws_security_group" "ecs_instances" {
-  name        = "${var.cluster_name}-ecs-sg"
-  description = "Security group for ECS instances"
+  name        = "QualysRegistrySensorECS-SG"
+  description = "Security group for Qualys Registry Sensor ECS instances"
   vpc_id      = var.create_vpc ? aws_vpc.main[0].id : var.vpc_id
 
   egress {
-    from_port   = 0
-    to_port     = 0
-    protocol    = "-1"
+    description = "HTTPS to internet for Qualys platform and ECR"
+    from_port   = 443
+    to_port     = 443
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  egress {
+    description = "DNS queries"
+    from_port   = 53
+    to_port     = 53
+    protocol    = "udp"
     cidr_blocks = ["0.0.0.0/0"]
   }
 
   tags = {
-    Name = "${var.cluster_name}-ecs-sg"
+    Name = "QualysRegistrySensorECS-SG"
   }
 }
 
@@ -250,7 +259,7 @@ resource "aws_ecs_cluster" "main" {
 }
 
 resource "aws_iam_role" "ecs_instance" {
-  name = "${var.cluster_name}-ecs-instance-role"
+  name = "QualysRegistrySensorECSInstanceRole"
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
@@ -271,18 +280,13 @@ resource "aws_iam_role_policy_attachment" "ecs_instance" {
   policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonEC2ContainerServiceforEC2Role"
 }
 
-resource "aws_iam_role_policy_attachment" "ecs_instance_ssm" {
-  role       = aws_iam_role.ecs_instance.name
-  policy_arn = "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
-}
-
 resource "aws_iam_instance_profile" "ecs_instance" {
-  name = "${var.cluster_name}-ecs-instance-profile"
+  name = "QualysRegistrySensorECSInstanceProfile"
   role = aws_iam_role.ecs_instance.name
 }
 
 resource "aws_iam_role" "ecs_task_execution" {
-  name = "${var.cluster_name}-ecs-task-execution-role"
+  name = "QualysRegistrySensorTaskExecutionRole"
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
@@ -304,7 +308,7 @@ resource "aws_iam_role_policy_attachment" "ecs_task_execution" {
 }
 
 resource "aws_iam_role" "ecs_task" {
-  name = "${var.cluster_name}-ecs-task-role"
+  name = "QualysRegistrySensorTaskRole"
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
