@@ -7,21 +7,15 @@
       "Default": "qualys-registry-cluster",
       "Description": "Name of the ECS cluster"
     },
-    "InstanceType": {
+    "ScanningLevel": {
       "Type": "String",
-      "Default": "c5.large",
+      "Default": "standard",
       "AllowedValues": [
-        "t3.medium",
-        "t3.large",
-        "t3.xlarge",
-        "c5.large",
-        "c5.xlarge",
-        "c5.2xlarge",
-        "m5.large",
-        "m5.xlarge",
-        "m5.2xlarge"
+        "basic",
+        "standard",
+        "full"
       ],
-      "Description": "EC2 instance type for ECS cluster nodes. c5.large recommended for Qualys workload."
+      "Description": "Scanning level: basic (vuln scanning, 2 CPU/4 GB), standard (vuln + SCA, 4 CPU/8 GB), full (vuln + SCA + secrets, 4 CPU/8 GB)"
     },
     "MinSize": {
       "Type": "Number",
@@ -98,6 +92,28 @@
       "Type": "AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>",
       "Default": "/aws/service/ecs/optimized-ami/amazon-linux-2/recommended/image_id",
       "Description": "Latest ECS Optimized AMI ID from SSM Parameter Store"
+    }
+  },
+  "Mappings": {
+    "ScanningLevelConfig": {
+      "basic": {
+        "InstanceType": "c5.large",
+        "Cpu": 2,
+        "Memory": 4096,
+        "Description": "Vulnerability scanning only"
+      },
+      "standard": {
+        "InstanceType": "c5.xlarge",
+        "Cpu": 4,
+        "Memory": 8192,
+        "Description": "Vulnerability scanning + SCA (default)"
+      },
+      "full": {
+        "InstanceType": "c5.xlarge",
+        "Cpu": 4,
+        "Memory": 8192,
+        "Description": "Vulnerability scanning + SCA + Secrets"
+      }
     }
   },
   "Conditions": {
@@ -703,7 +719,13 @@
             "Ref": "LatestECSOptimizedAMI"
           },
           "InstanceType": {
-            "Ref": "InstanceType"
+            "Fn::FindInMap": [
+              "ScanningLevelConfig",
+              {
+                "Ref": "ScanningLevel"
+              },
+              "InstanceType"
+            ]
           },
           "KeyName": {
             "Fn::If": [

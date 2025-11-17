@@ -9,6 +9,21 @@ This repository provides deployment templates for Qualys Container Registry Sens
 - **Azure**: AKS (Azure Kubernetes Service) with Terraform
 - **GCP**: GKE (Google Kubernetes Engine) with Terraform
 
+## Scanning Level Configuration
+
+All deployments support three scanning levels that automatically configure appropriate instance sizes:
+
+| Level | Capabilities | CPU | Memory | Use Case |
+|-------|-------------|-----|--------|----------|
+| **basic** | Vulnerability scanning only | 2 | 4 GB | Basic container vulnerability assessment |
+| **standard** (default) | Vulnerability + SCA | 4 | 8 GB | Standard scanning with software composition analysis |
+| **full** | Vulnerability + SCA + Secrets | 4 | 8 GB | Comprehensive scanning including secret detection |
+
+**Instance Types by Cloud:**
+- **AWS**: basic=`c5.large`, standard/full=`c5.xlarge`
+- **Azure**: basic=`Standard_F2s_v2`, standard/full=`Standard_F4s_v2`
+- **GCP**: basic=`e2-custom-2-4096`, standard/full=`e2-custom-4-8192`
+
 ---
 
 ## Quick Start
@@ -39,7 +54,7 @@ CloudFormation template to deploy Qualys Container Sensor on ECS with EC2 instan
 |-----------|---------|---------|-------------|
 | `CreateVpc` | `false` | `true`, `false` | Create new VPC with private subnets and NAT gateways |
 | `ClusterName` | `qualys-registry-cluster` | String | ECS cluster name |
-| `InstanceType` | `c5.large` | `c5.large`, `c5.xlarge`, etc. | EC2 instance type |
+| `ScanningLevel` | `standard` | `basic`, `standard`, `full` | Scanning level (auto-configures instance type) |
 | `DesiredCapacity` | `2` | 1-10 | Number of EC2 instances and Qualys tasks |
 | `MinSize` | `1` | 1-10 | ASG minimum size |
 | `MaxSize` | `3` | 1-20 | ASG maximum size |
@@ -165,7 +180,7 @@ Terraform template to deploy Qualys Container Sensor on Azure Kubernetes Service
 | `location` | `eastus` | Azure region |
 | `cluster_name` | `qualys-registry-cluster` | Name of the AKS cluster |
 | `node_count` | `2` | Number of nodes in the default pool |
-| `node_vm_size` | `Standard_D2s_v3` | VM size for nodes |
+| `scanning_level` | `standard` | Scanning level: `basic`, `standard`, `full` (auto-configures VM size) |
 | `kubernetes_version` | `1.28` | Kubernetes version |
 | `create_acr` | `true` | Create Azure Container Registry |
 
@@ -267,7 +282,7 @@ Terraform template to deploy Qualys Container Sensor on Google Kubernetes Engine
 | `region` | `us-central1` | GCP region |
 | `cluster_name` | `qualys-registry-cluster` | Name of the GKE cluster |
 | `node_count` | `1` | Number of nodes per zone |
-| `machine_type` | `e2-standard-2` | Machine type for nodes |
+| `scanning_level` | `standard` | Scanning level: `basic`, `standard`, `full` (auto-configures machine type) |
 | `kubernetes_version` | `1.28` | Kubernetes version |
 | `network_name` | `qualys-registry-network` | VPC network name |
 

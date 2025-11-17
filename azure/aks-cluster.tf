@@ -12,6 +12,30 @@ provider "azurerm" {
   features {}
 }
 
+locals {
+  scanning_level_config = {
+    basic = {
+      vm_size     = "Standard_F2s_v2"
+      cpu         = 2
+      memory_gb   = 4
+      description = "Vulnerability scanning only"
+    }
+    standard = {
+      vm_size     = "Standard_F4s_v2"
+      cpu         = 4
+      memory_gb   = 8
+      description = "Vulnerability scanning + SCA (default)"
+    }
+    full = {
+      vm_size     = "Standard_F4s_v2"
+      cpu         = 4
+      memory_gb   = 8
+      description = "Vulnerability scanning + SCA + Secrets"
+    }
+  }
+  node_vm_size = local.scanning_level_config[var.scanning_level].vm_size
+}
+
 variable "resource_group_name" {
   description = "Name of the resource group"
   type        = string
@@ -36,10 +60,14 @@ variable "node_count" {
   default     = 2
 }
 
-variable "node_vm_size" {
-  description = "VM size for cluster nodes"
+variable "scanning_level" {
+  description = "Scanning level: basic (vuln scanning, 2 CPU/4 GB), standard (vuln + SCA, 4 CPU/8 GB), full (vuln + SCA + secrets, 4 CPU/8 GB)"
   type        = string
-  default     = "Standard_D2s_v3"
+  default     = "standard"
+  validation {
+    condition     = contains(["basic", "standard", "full"], var.scanning_level)
+    error_message = "Scanning level must be one of: basic, standard, full"
+  }
 }
 
 variable "kubernetes_version" {
@@ -140,7 +168,7 @@ resource "azurerm_kubernetes_cluster" "aks" {
   default_node_pool {
     name                = "default"
     node_count          = var.node_count
-    vm_size             = var.node_vm_size
+    vm_size             = local.node_vm_size
     vnet_subnet_id      = azurerm_subnet.aks_subnet.id
     type                = "VirtualMachineScaleSets"
     os_disk_size_gb     = 30

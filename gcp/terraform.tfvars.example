@@ -14,8 +14,14 @@ subnet_name  = "qualys-registry-subnet"
 subnet_cidr  = "10.0.0.0/20"
 
 # Node Pool Configuration
-node_count   = 1  # Per zone (will be multiplied by number of zones)
-machine_type = "e2-standard-2"  # Options: e2-standard-2, e2-standard-4, n2-standard-2, n2-standard-4, etc.
+node_count = 1  # Per zone (will be multiplied by number of zones)
+
+# Scanning Level Configuration
+# Options:
+#   - basic: Vulnerability scanning only (2 CPU, 4 GB - e2-custom-2-4096)
+#   - standard: Vulnerability + SCA scanning (4 CPU, 8 GB - e2-custom-4-8192) [DEFAULT]
+#   - full: Vulnerability + SCA + Secrets scanning (4 CPU, 8 GB - e2-custom-4-8192)
+scanning_level = "standard"
 
 # Google Container Registry
 create_gcr = true

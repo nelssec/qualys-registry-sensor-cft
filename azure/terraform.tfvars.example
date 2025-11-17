@@ -9,8 +9,14 @@ cluster_name       = "qualys-registry-cluster"
 kubernetes_version = "1.28"
 
 # Node Pool Configuration
-node_count   = 2
-node_vm_size = "Standard_D2s_v3"  # Options: Standard_D2s_v3, Standard_D4s_v3, Standard_F4s_v2, etc.
+node_count = 2
+
+# Scanning Level Configuration
+# Options:
+#   - basic: Vulnerability scanning only (2 CPU, 4 GB - Standard_F2s_v2)
+#   - standard: Vulnerability + SCA scanning (4 CPU, 8 GB - Standard_F4s_v2) [DEFAULT]
+#   - full: Vulnerability + SCA + Secrets scanning (4 CPU, 8 GB - Standard_F4s_v2)
+scanning_level = "standard"
 
 # Azure Container Registry
 create_acr = true

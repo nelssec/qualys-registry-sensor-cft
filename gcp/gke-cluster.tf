@@ -13,6 +13,30 @@ provider "google" {
   region  = var.region
 }
 
+locals {
+  scanning_level_config = {
+    basic = {
+      machine_type = "e2-custom-2-4096"
+      cpu          = 2
+      memory_gb    = 4
+      description  = "Vulnerability scanning only"
+    }
+    standard = {
+      machine_type = "e2-custom-4-8192"
+      cpu          = 4
+      memory_gb    = 8
+      description  = "Vulnerability scanning + SCA (default)"
+    }
+    full = {
+      machine_type = "e2-custom-4-8192"
+      cpu          = 4
+      memory_gb    = 8
+      description  = "Vulnerability scanning + SCA + Secrets"
+    }
+  }
+  machine_type = local.scanning_level_config[var.scanning_level].machine_type
+}
+
 variable "project_id" {
   description = "GCP Project ID"
   type        = string
@@ -36,10 +60,14 @@ variable "node_count" {
   default     = 1
 }
 
-variable "machine_type" {
-  description = "Machine type for cluster nodes"
+variable "scanning_level" {
+  description = "Scanning level: basic (vuln scanning, 2 CPU/4 GB), standard (vuln + SCA, 4 CPU/8 GB), full (vuln + SCA + secrets, 4 CPU/8 GB)"
   type        = string
-  default     = "e2-standard-2"
+  default     = "standard"
+  validation {
+    condition     = contains(["basic", "standard", "full"], var.scanning_level)
+    error_message = "Scanning level must be one of: basic, standard, full"
+  }
 }
 
 variable "kubernetes_version" {
@@ -205,7 +233,7 @@ resource "google_container_node_pool" "primary_nodes" {
 
   node_config {
     preemptible  = false
-    machine_type = var.machine_type
+    machine_type = local.machine_type
 
     # Google recommends custom service accounts that have cloud-platform scope
     service_account = google_service_account.gke_sa.email
