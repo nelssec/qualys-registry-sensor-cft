@@ -31,15 +31,15 @@ cluster_name     = "qualys-registry-cluster"
 instance_type    = "c5.large"
 desired_capacity = 2
 
-create_vpc = false
-vpc_id     = "vpc-xxxxx"
-subnet_ids = ["subnet-xxxxx", "subnet-yyyyy"]
+create_vpc = true
 
 qualys_image         = "123456789012.dkr.ecr.us-east-1.amazonaws.com/qualys/qcs-sensor:latest"
 qualys_activation_id = "YOUR_ACTIVATION_ID"
 qualys_customer_id   = "YOUR_CUSTOMER_ID"
 qualys_pod_url       = "https://qualysapi.qualys.com"
 ```
+
+To use an existing VPC instead, set `create_vpc = false` and provide `vpc_id` and `subnet_ids`.
 
 ### Deploy
 
