@@ -1,0 +1,151 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: qualys-sensor
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: qualys-credentials
+  namespace: qualys-sensor
+type: Opaque
+stringData:
+  activation-id: "YOUR_ACTIVATION_ID"
+  customer-id: "YOUR_CUSTOMER_ID"
+  pod-url: "https://your-qualys-platform.qualys.com"
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: qualys-container-sensor
+  namespace: qualys-sensor
+  labels:
+    app: qualys-container-sensor
+    tier: security
+spec:
+  selector:
+    matchLabels:
+      app: qualys-container-sensor
+  template:
+    metadata:
+      labels:
+        app: qualys-container-sensor
+        tier: security
+    spec:
+      serviceAccountName: qualys-sensor
+      hostNetwork: false
+      hostPID: false
+      containers:
+      - name: qualys-container-sensor
+        image: YOUR_REGISTRY/qualys/qcs-sensor:latest
+        imagePullPolicy: Always
+        args:
+          - "--k8s-mode"
+          - "--registry-sensor"
+          - "--storage-driver-type"
+          - "overlay2"
+          - "--perform-sca-scan"
+          - "--optimize-image-scans"
+          - "--sensor-without-persistent-storage"
+          - "--enable-console-logs"
+        env:
+        - name: ACTIVATIONID
+          valueFrom:
+            secretKeyRef:
+              name: qualys-credentials
+              key: activation-id
+        - name: CUSTOMERID
+          valueFrom:
+            secretKeyRef:
+              name: qualys-credentials
+              key: customer-id
+        - name: POD_URL
+          valueFrom:
+            secretKeyRef:
+              name: qualys-credentials
+              key: pod-url
+        - name: NODE_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: spec.nodeName
+        volumeMounts:
+        - name: docker-sock
+          mountPath: /var/run/docker.sock
+          readOnly: false
+        - name: containerd-sock
+          mountPath: /run/containerd/containerd.sock
+          readOnly: false
+        - name: docker-root
+          mountPath: /var/lib/docker
+          readOnly: true
+        - name: containerd-root
+          mountPath: /var/lib/containerd
+          readOnly: true
+        resources:
+          limits:
+            memory: "1Gi"
+            cpu: "500m"
+          requests:
+            memory: "512Mi"
+            cpu: "250m"
+        securityContext:
+          privileged: false
+          capabilities:
+            add:
+              - SYS_ADMIN
+              - DAC_OVERRIDE
+              - SETUID
+              - SETGID
+      volumes:
+      - name: docker-sock
+        hostPath:
+          path: /var/run/docker.sock
+          type: Socket
+      - name: containerd-sock
+        hostPath:
+          path: /run/containerd/containerd.sock
+          type: Socket
+      - name: docker-root
+        hostPath:
+          path: /var/lib/docker
+          type: Directory
+      - name: containerd-root
+        hostPath:
+          path: /var/lib/containerd
+          type: Directory
+      tolerations:
+      - effect: NoSchedule
+        operator: Exists
+      - effect: NoExecute
+        operator: Exists
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: qualys-sensor
+  namespace: qualys-sensor
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: qualys-sensor
+rules:
+- apiGroups: [""]
+  resources: ["pods", "nodes"]
+  verbs: ["get", "list", "watch"]
+- apiGroups: ["apps"]
+  resources: ["daemonsets", "deployments", "replicasets", "statefulsets"]
+  verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: qualys-sensor
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: qualys-sensor
+subjects:
+- kind: ServiceAccount
+  name: qualys-sensor
+  namespace: qualys-sensor

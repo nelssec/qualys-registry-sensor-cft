@@ -1,0 +1,29 @@
+# GCP GKE Configuration for Qualys Registry Sensor
+
+# GCP Project
+project_id = "your-gcp-project-id"
+region     = "us-central1"  # Options: us-central1, us-east1, us-west1, europe-west1, asia-southeast1, etc.
+
+# GKE Cluster
+cluster_name       = "qualys-registry-cluster"
+kubernetes_version = "1.28"
+
+# Network Configuration
+network_name = "qualys-registry-network"
+subnet_name  = "qualys-registry-subnet"
+subnet_cidr  = "10.0.0.0/20"
+
+# Node Pool Configuration
+node_count   = 1  # Per zone (will be multiplied by number of zones)
+machine_type = "e2-standard-2"  # Options: e2-standard-2, e2-standard-4, n2-standard-2, n2-standard-4, etc.
+
+# Google Container Registry
+create_gcr = true
+
+# Qualys Configuration (REQUIRED - keep these secret!)
+qualys_activation_id = "YOUR_ACTIVATION_ID"
+qualys_customer_id   = "YOUR_CUSTOMER_ID"
+qualys_pod_url       = "https://your-qualys-platform.qualys.com"
+
+# Optional: Specify custom Qualys image if not using GCR
+# qualys_image = "gcr.io/your-project/qualys/qcs-sensor:latest"
