@@ -118,6 +118,14 @@ az aks get-credentials \
   --name qualys-registry-cluster
 ```
 
+### Create Namespace and Secrets
+
+Edit `kubernetes/qualys-namespace-secret.yaml` with your credentials, then:
+
+```bash
+kubectl apply -f ../kubernetes/qualys-namespace-secret.yaml
+```
+
 ### Deploy Sensor DaemonSet
 
 Update image in `kubernetes/qualys-daemonset.yaml` with your ACR location, then:
@@ -197,6 +205,14 @@ terraform apply
 gcloud container clusters get-credentials qualys-registry-cluster \
   --region us-central1 \
   --project YOUR_PROJECT_ID
+```
+
+### Create Namespace and Secrets
+
+Edit `kubernetes/qualys-namespace-secret.yaml` with your credentials, then:
+
+```bash
+kubectl apply -f ../kubernetes/qualys-namespace-secret.yaml
 ```
 
 ### Deploy Sensor DaemonSet
