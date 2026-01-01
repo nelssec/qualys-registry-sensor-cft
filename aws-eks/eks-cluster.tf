@@ -238,6 +238,68 @@ resource "aws_kms_alias" "eks" {
   target_key_id = aws_kms_key.eks.key_id
 }
 
+resource "aws_kms_key" "ebs" {
+  description             = "KMS key for EBS volume encryption"
+  deletion_window_in_days = 7
+  enable_key_rotation     = true
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid    = "Enable IAM User Permissions"
+        Effect = "Allow"
+        Principal = {
+          AWS = "arn:aws:iam::${data.aws_caller_identity.current.account_id}:root"
+        }
+        Action   = "kms:*"
+        Resource = "*"
+      },
+      {
+        Sid    = "Allow EBS Service"
+        Effect = "Allow"
+        Principal = {
+          AWS = aws_iam_role.eks_nodes.arn
+        }
+        Action = [
+          "kms:Encrypt",
+          "kms:Decrypt",
+          "kms:ReEncrypt*",
+          "kms:GenerateDataKey*",
+          "kms:DescribeKey",
+          "kms:CreateGrant"
+        ]
+        Resource = "*"
+      },
+      {
+        Sid    = "Allow Autoscaling Service"
+        Effect = "Allow"
+        Principal = {
+          Service = "autoscaling.amazonaws.com"
+        }
+        Action = [
+          "kms:Encrypt",
+          "kms:Decrypt",
+          "kms:ReEncrypt*",
+          "kms:GenerateDataKey*",
+          "kms:DescribeKey",
+          "kms:CreateGrant"
+        ]
+        Resource = "*"
+      }
+    ]
+  })
+
+  tags = {
+    Name = "${var.cluster_name}-ebs-key"
+  }
+}
+
+resource "aws_kms_alias" "ebs" {
+  name          = "alias/${var.cluster_name}-ebs"
+  target_key_id = aws_kms_key.ebs.key_id
+}
+
 resource "aws_kms_key" "logs" {
   description             = "KMS key for CloudWatch Logs encryption"
   deletion_window_in_days = 7
@@ -329,14 +391,19 @@ resource "aws_iam_role_policy" "flow_logs" {
     Statement = [
       {
         Action = [
-          "logs:CreateLogGroup",
           "logs:CreateLogStream",
-          "logs:PutLogEvents",
+          "logs:PutLogEvents"
+        ]
+        Effect   = "Allow"
+        Resource = "${aws_cloudwatch_log_group.flow_logs[0].arn}:*"
+      },
+      {
+        Action = [
           "logs:DescribeLogGroups",
           "logs:DescribeLogStreams"
         ]
         Effect   = "Allow"
-        Resource = "*"
+        Resource = "arn:aws:logs:${var.region}:${data.aws_caller_identity.current.account_id}:log-group:*"
       }
     ]
   })
@@ -360,17 +427,29 @@ resource "aws_security_group" "eks_cluster" {
   description = "Security group for EKS cluster"
   vpc_id      = var.create_vpc ? aws_vpc.main[0].id : var.vpc_id
 
-  egress {
-    description = "All outbound traffic"
-    from_port   = 0
-    to_port     = 0
-    protocol    = "-1"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
-
   tags = {
     Name = "${var.cluster_name}-eks-cluster-sg"
   }
+}
+
+resource "aws_security_group_rule" "cluster_egress_nodes" {
+  type                     = "egress"
+  from_port                = 443
+  to_port                  = 443
+  protocol                 = "tcp"
+  source_security_group_id = aws_security_group.eks_nodes.id
+  security_group_id        = aws_security_group.eks_cluster.id
+  description              = "Control plane to nodes HTTPS"
+}
+
+resource "aws_security_group_rule" "cluster_egress_nodes_kubelet" {
+  type                     = "egress"
+  from_port                = 10250
+  to_port                  = 10250
+  protocol                 = "tcp"
+  source_security_group_id = aws_security_group.eks_nodes.id
+  security_group_id        = aws_security_group.eks_cluster.id
+  description              = "Control plane to nodes kubelet"
 }
 
 resource "aws_security_group" "eks_nodes" {
@@ -379,15 +458,15 @@ resource "aws_security_group" "eks_nodes" {
   vpc_id      = var.create_vpc ? aws_vpc.main[0].id : var.vpc_id
 
   ingress {
-    description     = "Node to node communication"
-    from_port       = 0
-    to_port         = 0
-    protocol        = "-1"
-    self            = true
+    description = "Node to node communication"
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    self        = true
   }
 
   ingress {
-    description     = "Control plane to nodes"
+    description     = "Control plane to nodes HTTPS"
     from_port       = 443
     to_port         = 443
     protocol        = "tcp"
@@ -403,11 +482,35 @@ resource "aws_security_group" "eks_nodes" {
   }
 
   egress {
-    description = "All outbound traffic"
+    description = "HTTPS to internet"
+    from_port   = 443
+    to_port     = 443
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  egress {
+    description = "DNS UDP"
+    from_port   = 53
+    to_port     = 53
+    protocol    = "udp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  egress {
+    description = "DNS TCP"
+    from_port   = 53
+    to_port     = 53
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  egress {
+    description = "Node to node communication"
     from_port   = 0
     to_port     = 0
     protocol    = "-1"
-    cidr_blocks = ["0.0.0.0/0"]
+    self        = true
   }
 
   tags = {
@@ -483,8 +586,8 @@ resource "aws_eks_cluster" "main" {
     subnet_ids              = var.create_vpc ? aws_subnet.private[*].id : var.subnet_ids
     security_group_ids      = [aws_security_group.eks_cluster.id]
     endpoint_private_access = true
-    endpoint_public_access  = true
-    public_access_cidrs     = length(var.endpoint_public_access_cidrs) > 0 ? var.endpoint_public_access_cidrs : ["0.0.0.0/0"]
+    endpoint_public_access  = length(var.endpoint_public_access_cidrs) > 0
+    public_access_cidrs     = length(var.endpoint_public_access_cidrs) > 0 ? var.endpoint_public_access_cidrs : null
   }
 
   encryption_config {
@@ -520,6 +623,7 @@ resource "aws_launch_template" "eks_nodes" {
     device_name = "/dev/xvda"
     ebs {
       encrypted             = true
+      kms_key_id            = aws_kms_key.ebs.arn
       volume_type           = "gp3"
       volume_size           = 100
       delete_on_termination = true

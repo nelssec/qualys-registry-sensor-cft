@@ -1,6 +1,6 @@
 # Deploying Qualys Container Security Registry Sensor Across Multi-Cloud Environments
 
-This guide provides a comprehensive overview of deploying the Qualys Container Security Registry Sensor across AWS, Azure, and GCP with enterprise-grade security controls aligned with CIS Benchmarks.
+This guide provides a comprehensive overview of deploying the Qualys Container Security Registry Sensor across AWS (ECS and EKS), Azure AKS, and GCP GKE with enterprise-grade security controls aligned with CIS Benchmarks.
 
 ## Architecture Overview
 
@@ -10,20 +10,36 @@ flowchart TB
         QP[Qualys Cloud Platform]
     end
 
-    subgraph "AWS"
+    subgraph "AWS ECS"
         subgraph "VPC - 172.20.250.0/24"
-            subgraph "Private Subnets"
+            subgraph "Private Subnets ECS"
                 ECS[ECS Cluster]
                 EC2[EC2 Instances]
                 SENSOR1[Qualys Container Security Registry Sensor]
             end
-            subgraph "Public Subnets"
+            subgraph "Public Subnets ECS"
                 NAT1[NAT Gateway]
             end
         end
         SM[Secrets Manager]
         CW[CloudWatch Logs]
         KMS[KMS Keys]
+    end
+
+    subgraph "AWS EKS"
+        subgraph "VPC - 172.20.0.0/16"
+            subgraph "Private Subnets EKS"
+                EKS[EKS Cluster]
+                NODES[Node Groups]
+                SENSOR1B[Qualys Registry Sensor DaemonSet]
+            end
+            subgraph "Public Subnets EKS"
+                NAT1B[NAT Gateway]
+            end
+        end
+        OIDC[OIDC Provider]
+        CW2[CloudWatch Logs]
+        KMS2[KMS Keys]
     end
 
     subgraph "Azure"
@@ -55,10 +71,12 @@ flowchart TB
     end
 
     SENSOR1 -->|HTTPS 443| NAT1 -->|Scan Results| QP
+    SENSOR1B -->|HTTPS 443| NAT1B -->|Scan Results| QP
     SENSOR2 -->|HTTPS 443| NAT2 -->|Scan Results| QP
     SENSOR3 -->|HTTPS 443| NAT3 -->|Scan Results| QP
 
     EC2 --> SM
+    EKS --> OIDC
     AKS --> KV
     GKE --> GSM
 ```
@@ -221,6 +239,65 @@ flowchart TB
     EC2A & EC2B --> SG
     TASK --> CW
     CLUSTER --> CI
+```
+
+## AWS EKS Architecture
+
+```mermaid
+flowchart TB
+    subgraph "AWS Account"
+        subgraph "VPC"
+            subgraph "Availability Zone 1"
+                PUB1E[Public Subnet]
+                PRIV1E[Private Subnet]
+                NAT1E[NAT Gateway]
+            end
+            subgraph "Availability Zone 2"
+                PUB2E[Public Subnet]
+                PRIV2E[Private Subnet]
+                NAT2E[NAT Gateway]
+            end
+            IGWE[Internet Gateway]
+        end
+
+        subgraph "EKS"
+            CLUSTER[EKS Cluster]
+            NODEGROUP[Managed Node Group]
+            OIDC[OIDC Provider]
+        end
+
+        subgraph "Security"
+            SGE[Security Groups]
+            ROLEE[IAM Roles]
+            KMSE[KMS Keys]
+        end
+
+        subgraph "Monitoring"
+            CWE[CloudWatch Logs]
+            APILOGS[API/Audit Logs]
+            FLE[VPC Flow Logs]
+        end
+
+        subgraph "Compute"
+            LTE[Launch Template]
+            NODE1[EKS Node AZ1]
+            NODE2[EKS Node AZ2]
+        end
+    end
+
+    IGWE --> PUB1E & PUB2E
+    PUB1E --> NAT1E
+    PUB2E --> NAT2E
+    PRIV1E --> NAT1E
+    PRIV2E --> NAT2E
+    NAT1E & NAT2E -->|HTTPS| Internet
+
+    CLUSTER --> NODEGROUP --> LTE --> NODE1 & NODE2
+    NODE1 --> PRIV1E
+    NODE2 --> PRIV2E
+    CLUSTER --> OIDC
+    CLUSTER --> KMSE
+    CLUSTER --> CWE & APILOGS
 ```
 
 ## Kubernetes DaemonSet Flow
@@ -389,12 +466,20 @@ flowchart TB
         SENSOR[Qualys Container Security Registry Sensor]
     end
 
-    subgraph "AWS Specific"
+    subgraph "AWS ECS"
         ECS[ECS Cluster]
         EC2[EC2 Instances]
         SM[Secrets Manager]
         CW[CloudWatch]
         IMDS[IMDSv2]
+    end
+
+    subgraph "AWS EKS"
+        EKS[EKS Cluster]
+        NODEGROUPS[Managed Node Groups]
+        OIDC[OIDC Provider]
+        CW2[CloudWatch]
+        KMSEKS[KMS Encryption]
     end
 
     subgraph "Azure Specific"
@@ -425,22 +510,32 @@ flowchart TB
 
 ## Deployment Commands
 
-### AWS
+### AWS ECS
 ```bash
 cd aws
 terraform init
-terraform plan -var-file=terraform.tfvars
-terraform apply -var-file=terraform.tfvars
+terraform plan
+terraform apply
+```
+
+### AWS EKS
+```bash
+cd aws-eks
+terraform init
+terraform plan
+terraform apply
+
+aws eks update-kubeconfig --name qualys-registry-cluster --region us-east-1
+kubectl apply -f ../kubernetes/qualys-daemonset.yaml
 ```
 
 ### Azure
 ```bash
 cd azure
 terraform init
-terraform plan -var-file=terraform.tfvars
-terraform apply -var-file=terraform.tfvars
+terraform plan
+terraform apply
 
-# Deploy Kubernetes resources
 az aks get-credentials --resource-group qualys-registry-sensor-rg --name qualys-registry-cluster
 kubectl apply -f ../kubernetes/qualys-daemonset.yaml
 ```
@@ -449,28 +544,27 @@ kubectl apply -f ../kubernetes/qualys-daemonset.yaml
 ```bash
 cd gcp
 terraform init
-terraform plan -var-file=terraform.tfvars
-terraform apply -var-file=terraform.tfvars
+terraform plan
+terraform apply
 
-# Deploy Kubernetes resources
 gcloud container clusters get-credentials qualys-registry-cluster --region us-central1
 kubectl apply -f ../kubernetes/qualys-daemonset.yaml
 ```
 
 ## Security Controls Summary
 
-| Control | AWS | Azure | GCP |
-|---------|-----|-------|-----|
-| Secrets Management | Secrets Manager + KMS | Key Vault | Secret Manager |
-| Network Isolation | VPC + Private Subnets | VNet + NAT Gateway | VPC + Cloud NAT |
-| API Restriction | Security Groups | NSG + API IP Ranges | Firewall + Master Auth Networks |
-| Encryption at Rest | EBS + KMS | Ephemeral Disks | pd-ssd |
-| Encryption in Transit | TLS 1.2+ | TLS 1.2+ | TLS 1.2+ |
-| Identity | IAM Roles + IMDSv2 | Managed Identity + Workload Identity | Workload Identity |
-| Logging | CloudWatch + Flow Logs | Log Analytics + Defender | Cloud Logging + Prometheus |
-| Image Security | ECR Scanning | ACR + Defender | Binary Authorization |
-| Runtime Security | Container Insights | Azure Policy | Security Posture |
-| Node Security | EBS Encryption | Ephemeral OS Disks | Shielded Nodes |
+| Control | AWS ECS | AWS EKS | Azure AKS | GCP GKE |
+|---------|---------|---------|-----------|---------|
+| Secrets Management | Secrets Manager + KMS | Kubernetes Secrets + KMS | Key Vault | Secret Manager |
+| Network Isolation | VPC + Private Subnets | VPC + Private Subnets | VNet + NAT Gateway | VPC + Cloud NAT |
+| API Restriction | Security Groups | Security Groups + OIDC | NSG + API IP Ranges | Firewall + Master Auth Networks |
+| Encryption at Rest | EBS + KMS | EBS + KMS | Ephemeral Disks | pd-ssd |
+| Encryption in Transit | TLS 1.2+ | TLS 1.2+ | TLS 1.2+ | TLS 1.2+ |
+| Identity | IAM Roles + IMDSv2 | IAM Roles + OIDC | Managed Identity + Workload Identity | Workload Identity |
+| Logging | CloudWatch + Flow Logs | CloudWatch + API Logs | Log Analytics + Defender | Cloud Logging + Prometheus |
+| Image Security | ECR Scanning | ECR Scanning | ACR + Defender | Binary Authorization |
+| Runtime Security | Container Insights | Container Insights | Azure Policy | Security Posture |
+| Node Security | EBS Encryption | EBS Encryption + IMDSv2 | Ephemeral OS Disks | Shielded Nodes |
 
 ## Monitoring and Observability
 
@@ -514,7 +608,7 @@ flowchart LR
 
 ## Conclusion
 
-This multi-cloud deployment provides a consistent, secure approach to deploying the Qualys Container Security Registry Sensor across AWS, Azure, and GCP. Key security features include:
+This multi-cloud deployment provides a consistent, secure approach to deploying the Qualys Container Security Registry Sensor across AWS (ECS and EKS), Azure AKS, and GCP GKE. Key security features include:
 
 - **Secrets stored in cloud-native secret managers** with KMS encryption
 - **Private networking** with NAT gateways for outbound-only access
@@ -524,5 +618,6 @@ This multi-cloud deployment provides a consistent, secure approach to deploying 
 - **Binary authorization** (GCP) for image verification
 - **Defender for Containers** (Azure) for threat detection
 - **Container Insights** (AWS) for performance monitoring
+- **OIDC provider** (EKS) for IAM Roles for Service Accounts
 
 All configurations follow CIS Benchmarks and cloud provider security best practices.
