@@ -11,6 +11,31 @@ Terraform configurations for deploying Qualys Container Security Registry Sensor
 
 ---
 
+## Quick Start
+
+### Interactive Deployment (Recommended)
+
+```bash
+./deploy.sh
+```
+
+This wizard will:
+- Check prerequisites
+- Prompt for Qualys credentials
+- Configure cloud-specific settings
+- Deploy infrastructure and sensor
+
+### Using Make Commands
+
+```bash
+make help              # Show all commands
+make deploy-aws        # Deploy to AWS
+make deploy-azure      # Deploy to Azure
+make deploy-gcp        # Deploy to GCP
+```
+
+---
+
 ## AWS ECS Deployment
 
 Terraform configuration for ECS cluster on EC2 instances with optional VPC creation.
@@ -22,6 +47,12 @@ Terraform configuration for ECS cluster on EC2 instances with optional VPC creat
 - Private ECR repository with Qualys container image
 
 ### Configuration
+
+Copy and edit the example configuration:
+
+```bash
+cp aws/terraform.tfvars.example aws/terraform.tfvars
+```
 
 Edit `aws/terraform.tfvars`:
 
@@ -44,6 +75,10 @@ To use an existing VPC instead, set `create_vpc = false` and provide `vpc_id` an
 ### Deploy
 
 ```bash
+# Using Make (recommended)
+make deploy-aws
+
+# Or manually
 cd aws
 terraform init
 terraform plan
@@ -85,6 +120,12 @@ Terraform configuration for AKS cluster with managed node pools and optional ACR
 
 ### Configuration
 
+Copy and edit the example configuration:
+
+```bash
+cp azure/terraform.tfvars.example azure/terraform.tfvars
+```
+
 Edit `azure/terraform.tfvars`:
 
 ```hcl
@@ -104,6 +145,10 @@ qualys_pod_url       = "https://qualysapi.qualys.com"
 ### Deploy
 
 ```bash
+# Using Make (recommended) - deploys infra + k8s resources
+make deploy-azure
+
+# Or manually
 cd azure
 terraform init
 terraform plan
@@ -165,6 +210,12 @@ Terraform configuration for GKE regional cluster with multi-zone node pools.
 
 ### Configuration
 
+Copy and edit the example configuration:
+
+```bash
+cp gcp/terraform.tfvars.example gcp/terraform.tfvars
+```
+
 Edit `gcp/terraform.tfvars`:
 
 ```hcl
@@ -193,6 +244,10 @@ gcloud config set project YOUR_PROJECT_ID
 ### Deploy
 
 ```bash
+# Using Make (recommended) - deploys infra + k8s resources
+make deploy-gcp
+
+# Or manually
 cd gcp
 terraform init
 terraform plan
@@ -248,9 +303,22 @@ terraform output get_credentials_command
 ### View Registry Sensor Logs
 
 ```bash
-kubectl get pods -n qualys-sensor
+# Using Make
+make logs-aws      # AWS
+make logs-azure    # Azure
+make logs-gcp      # GCP
+
+# Or manually (Kubernetes)
 kubectl logs -n qualys-sensor -l app=qualys-container-sensor --tail=100
 kubectl logs -n qualys-sensor <pod-name> -f
+```
+
+### Check Status
+
+```bash
+make status-aws    # AWS
+make status-azure  # Azure
+make status-gcp    # GCP
 ```
 
 ### Update Registry Sensor Image
@@ -296,22 +364,14 @@ kubectl get secret qualys-credentials -n qualys-sensor
 
 ## Cleanup
 
-### AWS
 ```bash
-cd aws
-terraform destroy
-```
+# Using Make
+make destroy-aws
+make destroy-azure
+make destroy-gcp
 
-### Azure
-```bash
-cd azure
-terraform destroy
-```
-
-### GCP
-```bash
-cd gcp
-terraform destroy
+# Or manually
+cd <cloud> && terraform destroy
 ```
 
 ---

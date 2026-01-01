@@ -108,21 +108,21 @@ The Qualys Container Sensor requires:
 **Considered Alternatives**:
 
 1. **Azure Container Instances (ACI)**
-   - ❌ No Docker/containerd socket access
-   - ❌ No host path mounting
-   - ❌ Not suitable for registry scanning
+   - No Docker/containerd socket access
+   - No host path mounting
+   - Not suitable for registry scanning
 
 2. **GCP Cloud Run**
-   - ❌ Serverless, no socket access
-   - ❌ Requires HTTP endpoint
-   - ❌ Not suitable for registry scanning
+   - Serverless, no socket access
+   - Requires HTTP endpoint
+   - Not suitable for registry scanning
 
-3. **Kubernetes (AKS/GKE)** ✅
-   - ✅ Full control over pod scheduling
-   - ✅ DaemonSet pattern matches ECS DAEMON
-   - ✅ Socket and volume mounting supported
-   - ✅ Multi-runtime support (Docker/containerd)
-   - ✅ Native auto-scaling
+3. **Kubernetes (AKS/GKE)** (Selected)
+   - Full control over pod scheduling
+   - DaemonSet pattern matches ECS DAEMON
+   - Socket and volume mounting supported
+   - Multi-runtime support (Docker/containerd)
+   - Native auto-scaling
 
 ### Infrastructure-as-Code Tools
 
