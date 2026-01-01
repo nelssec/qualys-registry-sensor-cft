@@ -27,7 +27,7 @@ variable "cluster_name" {
 variable "instance_type" {
   description = "EC2 instance type for ECS cluster nodes"
   type        = string
-  default     = "c5.large"
+  default     = "t3.medium"
 }
 
 variable "min_size" {

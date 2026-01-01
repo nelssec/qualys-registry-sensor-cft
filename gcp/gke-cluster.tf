@@ -39,13 +39,13 @@ variable "node_count" {
 variable "machine_type" {
   description = "Machine type for cluster nodes"
   type        = string
-  default     = "e2-standard-2"
+  default     = "e2-medium"
 }
 
 variable "kubernetes_version" {
   description = "Kubernetes version"
   type        = string
-  default     = "1.28"
+  default     = null
 }
 
 variable "create_gcr" {

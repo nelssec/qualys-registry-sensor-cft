@@ -10,9 +10,14 @@ check_prerequisites() {
     fi
 
     case $cloud in
-        aws)
+        aws|aws-eks)
             if ! command -v aws &> /dev/null; then
                 missing+=("aws-cli")
+            fi
+            if [ "$cloud" == "aws-eks" ]; then
+                if ! command -v kubectl &> /dev/null; then
+                    missing+=("kubectl")
+                fi
             fi
             ;;
         azure)
@@ -77,7 +82,7 @@ region = "${AWS_REGION}"
 
 cluster_name = "qualys-registry-cluster"
 
-instance_type    = "c5.large"
+instance_type    = "t3.medium"
 min_size         = 1
 max_size         = 3
 desired_capacity = 2
@@ -105,13 +110,87 @@ EOF
         terraform apply tfplan
         rm -f tfplan
         echo ""
-        echo "AWS deployment complete."
+        echo "AWS ECS deployment complete."
     else
         rm -f tfplan
         echo "Deployment cancelled."
     fi
 
     cd ..
+}
+
+deploy_aws_eks() {
+    echo "Deploying to AWS EKS..."
+
+    check_prerequisites "aws-eks"
+
+    if [ ! -f "aws-eks/terraform.tfvars" ]; then
+        cp aws-eks/terraform.tfvars.example aws-eks/terraform.tfvars
+    fi
+
+    prompt_credentials
+
+    read -p "AWS Region [us-east-1]: " AWS_REGION
+    AWS_REGION=${AWS_REGION:-us-east-1}
+
+    read -p "ECR Image URI: " QUALYS_IMAGE
+    if [ -z "$QUALYS_IMAGE" ]; then
+        echo "Error: ECR Image URI is required"
+        exit 1
+    fi
+
+    cat > aws-eks/terraform.tfvars << EOF
+region = "${AWS_REGION}"
+
+cluster_name = "qualys-registry-cluster"
+
+instance_type    = "t3.medium"
+min_size         = 1
+max_size         = 10
+desired_capacity = 2
+
+create_vpc = true
+
+qualys_image         = "${QUALYS_IMAGE}"
+qualys_activation_id = "${ACTIVATION_ID}"
+qualys_customer_id   = "${CUSTOMER_ID}"
+qualys_pod_url       = "${POD_URL}"
+EOF
+
+    sed -i.bak "s/YOUR_ACTIVATION_ID/${ACTIVATION_ID}/g" kubernetes/qualys-daemonset.yaml
+    sed -i.bak "s/YOUR_CUSTOMER_ID/${CUSTOMER_ID}/g" kubernetes/qualys-daemonset.yaml
+    sed -i.bak "s|https://your-qualys-platform.qualys.com|${POD_URL}|g" kubernetes/qualys-daemonset.yaml
+    rm -f kubernetes/qualys-daemonset.yaml.bak
+
+    cd aws-eks
+    terraform init
+    terraform plan -out=tfplan
+
+    echo ""
+    read -p "Apply this plan? (yes/no): " CONFIRM
+    if [ "$CONFIRM" == "yes" ]; then
+        terraform apply tfplan
+        rm -f tfplan
+
+        echo "Configuring kubectl..."
+        $(terraform output -raw get_credentials_command)
+
+        echo "Deploying Kubernetes resources..."
+        cd ..
+        kubectl apply -f kubernetes/qualys-daemonset.yaml
+
+        echo "Waiting for pods..."
+        kubectl wait --for=condition=ready pod -l app=qualys-container-sensor -n qualys-sensor --timeout=300s || true
+
+        echo ""
+        echo "AWS EKS deployment complete."
+        echo ""
+        kubectl get pods -n qualys-sensor
+    else
+        rm -f tfplan
+        cd ..
+        echo "Deployment cancelled."
+    fi
 }
 
 deploy_azure() {
@@ -135,11 +214,10 @@ deploy_azure() {
 resource_group_name = "${RG_NAME}"
 location            = "${AZURE_REGION}"
 
-cluster_name       = "qualys-registry-cluster"
-kubernetes_version = "1.28"
+cluster_name = "qualys-registry-cluster"
 
 node_count   = 2
-node_vm_size = "Standard_D2s_v3"
+node_vm_size = "Standard_B2s"
 
 create_acr = true
 acr_name   = ""
@@ -209,15 +287,14 @@ deploy_gcp() {
 project_id = "${PROJECT_ID}"
 region     = "${GCP_REGION}"
 
-cluster_name       = "qualys-registry-cluster"
-kubernetes_version = "1.28"
+cluster_name = "qualys-registry-cluster"
 
 network_name = "qualys-registry-network"
 subnet_name  = "qualys-registry-subnet"
 subnet_cidr  = "10.0.0.0/20"
 
 node_count   = 1
-machine_type = "e2-standard-2"
+machine_type = "e2-medium"
 
 create_gcr = true
 
@@ -271,16 +348,18 @@ if [ -n "$1" ]; then
 else
     echo "Select cloud provider:"
     echo ""
-    echo "  1) AWS (ECS)"
-    echo "  2) Azure (AKS)"
-    echo "  3) GCP (GKE)"
+    echo "  1) AWS ECS"
+    echo "  2) AWS EKS"
+    echo "  3) Azure AKS"
+    echo "  4) GCP GKE"
     echo ""
-    read -p "Enter choice [1-3]: " CHOICE
+    read -p "Enter choice [1-4]: " CHOICE
 
     case $CHOICE in
         1) CLOUD="aws" ;;
-        2) CLOUD="azure" ;;
-        3) CLOUD="gcp" ;;
+        2) CLOUD="aws-eks" ;;
+        3) CLOUD="azure" ;;
+        4) CLOUD="gcp" ;;
         *) echo "Invalid choice"; exit 1 ;;
     esac
 fi
@@ -288,6 +367,9 @@ fi
 case $CLOUD in
     aws)
         deploy_aws
+        ;;
+    aws-eks)
+        deploy_aws_eks
         ;;
     azure)
         deploy_azure
@@ -297,7 +379,7 @@ case $CLOUD in
         ;;
     *)
         echo "Unknown cloud: $CLOUD"
-        echo "Usage: $0 [aws|azure|gcp]"
+        echo "Usage: $0 [aws|aws-eks|azure|gcp]"
         exit 1
         ;;
 esac

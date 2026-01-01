@@ -6,6 +6,7 @@ Deploy Qualys Container Security Registry Sensor across AWS, Azure, and GCP with
 
 Terraform configurations for deploying Qualys Container Security Registry Sensor on:
 - **AWS ECS**: EC2-based ECS cluster with optional VPC creation
+- **AWS EKS**: Managed Kubernetes with EC2 node groups
 - **Azure AKS**: Managed Kubernetes with Azure Container Registry
 - **GCP GKE**: Managed Kubernetes with Google Container Registry
 
@@ -29,9 +30,10 @@ This wizard will:
 
 ```bash
 make help              # Show all commands
-make deploy-aws        # Deploy to AWS
-make deploy-azure      # Deploy to Azure
-make deploy-gcp        # Deploy to GCP
+make deploy-aws        # Deploy to AWS ECS
+make deploy-aws-eks    # Deploy to AWS EKS
+make deploy-azure      # Deploy to Azure AKS
+make deploy-gcp        # Deploy to GCP GKE
 ```
 
 ---
@@ -59,7 +61,7 @@ Edit `aws/terraform.tfvars`:
 ```hcl
 region           = "us-east-1"
 cluster_name     = "qualys-registry-cluster"
-instance_type    = "c5.large"
+instance_type    = "t3.medium"
 desired_capacity = 2
 
 create_vpc = true
@@ -108,6 +110,88 @@ terraform output task_definition_arn
 
 ---
 
+## AWS EKS Deployment
+
+Terraform configuration for EKS cluster with managed node groups and optional VPC creation.
+
+### Prerequisites
+
+- AWS CLI configured with appropriate credentials
+- Terraform >= 1.0
+- kubectl
+- Private ECR repository with Qualys container image
+
+### Configuration
+
+Copy and edit the example configuration:
+
+```bash
+cp aws-eks/terraform.tfvars.example aws-eks/terraform.tfvars
+```
+
+Edit `aws-eks/terraform.tfvars`:
+
+```hcl
+region           = "us-east-1"
+cluster_name     = "qualys-registry-cluster"
+instance_type    = "t3.medium"
+desired_capacity = 2
+
+create_vpc = true
+
+qualys_image         = "123456789012.dkr.ecr.us-east-1.amazonaws.com/qualys/qcs-sensor:latest"
+qualys_activation_id = "YOUR_ACTIVATION_ID"
+qualys_customer_id   = "YOUR_CUSTOMER_ID"
+qualys_pod_url       = "https://qualysapi.qualys.com"
+```
+
+### Deploy
+
+```bash
+# Using Make (recommended) - deploys infra + k8s resources
+make deploy-aws-eks
+
+# Or manually
+cd aws-eks
+terraform init
+terraform plan
+terraform apply
+```
+
+### Configure kubectl
+
+```bash
+aws eks update-kubeconfig --name qualys-registry-cluster --region us-east-1
+```
+
+### Deploy Registry Sensor DaemonSet
+
+Update image in `kubernetes/qualys-daemonset.yaml` with your ECR location, then:
+
+```bash
+kubectl apply -f kubernetes/qualys-daemonset.yaml
+kubectl get pods -n qualys-sensor
+```
+
+### Architecture
+
+- EKS cluster with managed node groups (auto-scaling 1-10 nodes)
+- VPC: 172.20.0.0/16 with public and private subnets
+- NAT gateways for outbound internet access
+- OIDC provider for IAM Roles for Service Accounts
+- KMS encryption for secrets
+- DaemonSet deployment (one Registry Sensor pod per node)
+
+### Outputs
+
+```bash
+terraform output cluster_name
+terraform output cluster_endpoint
+terraform output get_credentials_command
+```
+
+---
+
 ## Azure AKS Deployment
 
 Terraform configuration for AKS cluster with managed node pools and optional ACR.
@@ -133,7 +217,7 @@ resource_group_name = "qualys-registry-sensor-rg"
 location            = "eastus"
 cluster_name        = "qualys-registry-cluster"
 node_count          = 2
-node_vm_size        = "Standard_D2s_v3"
+node_vm_size        = "Standard_B2s"
 
 create_acr = true
 
@@ -219,12 +303,11 @@ cp gcp/terraform.tfvars.example gcp/terraform.tfvars
 Edit `gcp/terraform.tfvars`:
 
 ```hcl
-project_id = "your-gcp-project-id"
-region     = "us-central1"
-
+project_id   = "your-gcp-project-id"
+region       = "us-central1"
 cluster_name = "qualys-registry-cluster"
 node_count   = 1
-machine_type = "e2-standard-2"
+machine_type = "e2-medium"
 
 create_gcr = true
 
@@ -304,7 +387,8 @@ terraform output get_credentials_command
 
 ```bash
 # Using Make
-make logs-aws      # AWS
+make logs-aws      # AWS ECS
+make logs-aws-eks  # AWS EKS
 make logs-azure    # Azure
 make logs-gcp      # GCP
 
@@ -316,9 +400,10 @@ kubectl logs -n qualys-sensor <pod-name> -f
 ### Check Status
 
 ```bash
-make status-aws    # AWS
-make status-azure  # Azure
-make status-gcp    # GCP
+make status-aws        # AWS ECS
+make status-aws-eks    # AWS EKS
+make status-azure      # Azure
+make status-gcp        # GCP
 ```
 
 ### Update Registry Sensor Image
@@ -367,6 +452,7 @@ kubectl get secret qualys-credentials -n qualys-sensor
 ```bash
 # Using Make
 make destroy-aws
+make destroy-aws-eks
 make destroy-azure
 make destroy-gcp
 

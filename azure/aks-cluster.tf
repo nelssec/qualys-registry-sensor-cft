@@ -39,13 +39,13 @@ variable "node_count" {
 variable "node_vm_size" {
   description = "VM size for cluster nodes"
   type        = string
-  default     = "Standard_D2s_v3"
+  default     = "Standard_B2s"
 }
 
 variable "kubernetes_version" {
   description = "Kubernetes version"
   type        = string
-  default     = "1.28"
+  default     = null
 }
 
 variable "create_acr" {

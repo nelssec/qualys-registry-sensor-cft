@@ -32,6 +32,32 @@ VPC (172.20.250.0/24)
 
 **Container Runtime**: Docker (Amazon Linux 2 ECS-optimized AMI)
 
+### AWS EKS
+
+**Deployment Model**: Kubernetes DaemonSet on EKS
+
+**Components**:
+- EKS Cluster with managed node groups
+- VPC with public/private subnets and NAT gateways
+- IAM roles for node groups and OIDC provider
+- KMS encryption for cluster secrets
+- CloudWatch Logs for monitoring
+
+**Network Architecture**:
+```
+VPC (172.20.0.0/16)
+├── Public Subnets (2x /24)
+│   ├── NAT Gateway 1
+│   └── NAT Gateway 2
+└── Private Subnets (2x /24)
+    ├── Node 1 -> Qualys Pod (DaemonSet)
+    └── Node 2 -> Qualys Pod (DaemonSet)
+```
+
+**Scaling**: One Qualys pod per node (DaemonSet)
+
+**Container Runtime**: containerd (EKS managed nodes)
+
 ### Azure AKS
 
 **Deployment Model**: Kubernetes DaemonSet on AKS
@@ -136,7 +162,8 @@ Limits:
 
 | Cloud | Method |
 |-------|--------|
-| AWS | Secrets Manager with KMS encryption |
+| AWS ECS | Secrets Manager with KMS encryption |
+| AWS EKS | Kubernetes Secrets (OIDC for IAM integration) |
 | Azure | Terraform Variables (sensitive) to Kubernetes Secret |
 | GCP | Terraform Variables (sensitive) to Kubernetes Secret |
 
@@ -173,7 +200,8 @@ Capabilities:
 
 | Cloud | Service | Log Location |
 |-------|---------|--------------|
-| AWS | CloudWatch Logs | /ecs/{cluster}/qualys-container-sensor |
+| AWS ECS | CloudWatch Logs | /ecs/{cluster}/qualys-container-sensor |
+| AWS EKS | CloudWatch Logs | /aws/eks/{cluster}/cluster |
 | Azure | Log Analytics | AKS cluster workspace |
 | GCP | Cloud Logging | GKE cluster logs |
 
@@ -182,6 +210,10 @@ Capabilities:
 ### AWS ECS
 - Auto Scaling Group adjusts EC2 instance count
 - ECS DAEMON strategy ensures one task per instance
+
+### AWS EKS
+- Managed node group auto-scales based on demand
+- DaemonSet automatically schedules pod on new nodes
 
 ### Azure AKS
 - Node pool auto-scales based on demand
@@ -198,6 +230,11 @@ Capabilities:
 - Multi-AZ deployment (2 AZs)
 - Auto Scaling Group maintains desired capacity
 - ECS service automatically replaces failed tasks
+
+### AWS EKS
+- Multi-AZ deployment (2 AZs)
+- Managed node groups handle node replacement
+- Pod automatically rescheduled on node failure
 
 ### Azure AKS
 - Multi-zone node pool (availability zones)

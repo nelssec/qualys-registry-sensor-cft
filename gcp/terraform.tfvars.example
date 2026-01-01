@@ -1,15 +1,14 @@
 project_id = "your-gcp-project-id"
 region     = "us-central1"
 
-cluster_name       = "qualys-registry-cluster"
-kubernetes_version = "1.28"
+cluster_name = "qualys-registry-cluster"
 
 network_name = "qualys-registry-network"
 subnet_name  = "qualys-registry-subnet"
 subnet_cidr  = "10.0.0.0/20"
 
 node_count   = 1
-machine_type = "e2-standard-2"
+machine_type = "e2-medium"
 
 create_gcr = true
 
