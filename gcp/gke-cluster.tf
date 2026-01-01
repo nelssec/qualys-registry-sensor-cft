@@ -95,13 +95,47 @@ variable "subnet_cidr" {
   default     = "10.0.0.0/20"
 }
 
-# VPC Network
+variable "master_authorized_networks" {
+  description = "List of CIDR blocks authorized to access the Kubernetes API server"
+  type = list(object({
+    cidr_block   = string
+    display_name = string
+  }))
+  default = []
+}
+
+variable "enable_binary_authorization" {
+  description = "Enable Binary Authorization for container image verification"
+  type        = bool
+  default     = true
+}
+
+resource "google_project_service" "container" {
+  service            = "container.googleapis.com"
+  disable_on_destroy = false
+}
+
+resource "google_project_service" "compute" {
+  service            = "compute.googleapis.com"
+  disable_on_destroy = false
+}
+
+resource "google_project_service" "binaryauthorization" {
+  count              = var.enable_binary_authorization ? 1 : 0
+  service            = "binaryauthorization.googleapis.com"
+  disable_on_destroy = false
+}
+
+resource "google_project_service" "containerscanning" {
+  service            = "containerscanning.googleapis.com"
+  disable_on_destroy = false
+}
+
 resource "google_compute_network" "vpc" {
   name                    = var.network_name
   auto_create_subnetworks = false
 }
 
-# Subnet
 resource "google_compute_subnetwork" "subnet" {
   name          = var.subnet_name
   ip_cidr_range = var.subnet_cidr
@@ -119,14 +153,12 @@ resource "google_compute_subnetwork" "subnet" {
   }
 }
 
-# Cloud Router for NAT
 resource "google_compute_router" "router" {
   name    = "${var.cluster_name}-router"
   region  = var.region
   network = google_compute_network.vpc.id
 }
 
-# Cloud NAT for outbound internet access
 resource "google_compute_router_nat" "nat" {
   name                               = "${var.cluster_name}-nat"
   router                             = google_compute_router.router.name
@@ -140,7 +172,6 @@ resource "google_compute_router_nat" "nat" {
   }
 }
 
-# Firewall rule for GKE internal traffic
 resource "google_compute_firewall" "gke_internal" {
   name    = "${var.cluster_name}-allow-internal"
   network = google_compute_network.vpc.name
@@ -166,7 +197,6 @@ resource "google_compute_firewall" "gke_internal" {
   target_tags = ["qualys-registry-sensor"]
 }
 
-# Firewall rule for HTTPS egress
 resource "google_compute_firewall" "qualys_egress" {
   name      = "${var.cluster_name}-allow-https-egress"
   network   = google_compute_network.vpc.name
@@ -181,7 +211,6 @@ resource "google_compute_firewall" "qualys_egress" {
   target_tags        = ["qualys-registry-sensor"]
 }
 
-# Firewall rule for DNS egress
 resource "google_compute_firewall" "dns_egress" {
   name      = "${var.cluster_name}-allow-dns-egress"
   network   = google_compute_network.vpc.name
@@ -201,33 +230,55 @@ resource "google_compute_firewall" "dns_egress" {
   target_tags        = ["qualys-registry-sensor"]
 }
 
-# GKE Cluster
+resource "google_service_account" "gke_sa" {
+  account_id   = "qualys-registry-sensor-gke-sa"
+  display_name = "Qualys Registry Sensor GKE Node Service Account"
+}
+
+resource "google_project_iam_member" "gke_sa_log_writer" {
+  project = var.project_id
+  role    = "roles/logging.logWriter"
+  member  = "serviceAccount:${google_service_account.gke_sa.email}"
+}
+
+resource "google_project_iam_member" "gke_sa_metric_writer" {
+  project = var.project_id
+  role    = "roles/monitoring.metricWriter"
+  member  = "serviceAccount:${google_service_account.gke_sa.email}"
+}
+
+resource "google_project_iam_member" "gke_sa_monitoring_viewer" {
+  project = var.project_id
+  role    = "roles/monitoring.viewer"
+  member  = "serviceAccount:${google_service_account.gke_sa.email}"
+}
+
+resource "google_project_iam_member" "gke_sa_artifact_registry_reader" {
+  project = var.project_id
+  role    = "roles/artifactregistry.reader"
+  member  = "serviceAccount:${google_service_account.gke_sa.email}"
+}
+
 resource "google_container_cluster" "primary" {
   name     = var.cluster_name
   location = var.region
 
-  # Regional cluster with multiple zones
   node_locations = [
     "${var.region}-a",
     "${var.region}-b",
   ]
 
-  # We can't create a cluster with no node pool defined, but we want to only use
-  # separately managed node pools. So we create the smallest possible default
-  # node pool and immediately delete it.
   remove_default_node_pool = true
   initial_node_count       = 1
 
   network    = google_compute_network.vpc.name
   subnetwork = google_compute_subnetwork.subnet.name
 
-  # IP allocation policy for VPC-native cluster
   ip_allocation_policy {
     cluster_secondary_range_name  = "pods"
     services_secondary_range_name = "services"
   }
 
-  # Private cluster configuration
   private_cluster_config {
     enable_private_nodes    = true
     enable_private_endpoint = false
@@ -235,39 +286,54 @@ resource "google_container_cluster" "primary" {
   }
 
   master_authorized_networks_config {
-    cidr_blocks {
-      cidr_block   = "0.0.0.0/0"
-      display_name = "All networks"
+    dynamic "cidr_blocks" {
+      for_each = length(var.master_authorized_networks) > 0 ? var.master_authorized_networks : []
+      content {
+        cidr_block   = cidr_blocks.value.cidr_block
+        display_name = cidr_blocks.value.display_name
+      }
     }
   }
 
-  # Enable Workload Identity
+  dynamic "binary_authorization" {
+    for_each = var.enable_binary_authorization ? [1] : []
+    content {
+      evaluation_mode = "PROJECT_SINGLETON_POLICY_SCOPE"
+    }
+  }
+
+  datapath_provider = "ADVANCED_DATAPATH"
+
   workload_identity_config {
     workload_pool = "${var.project_id}.svc.id.goog"
   }
 
-  # Logging and monitoring
   logging_config {
-    enable_components = ["SYSTEM_COMPONENTS"]
+    enable_components = ["SYSTEM_COMPONENTS", "WORKLOADS"]
   }
 
   monitoring_config {
     enable_components = ["SYSTEM_COMPONENTS"]
+    managed_prometheus {
+      enabled = true
+    }
   }
 
-  # Release channel for automatic updates
+  security_posture_config {
+    mode               = "BASIC"
+    vulnerability_mode = "VULNERABILITY_ENTERPRISE"
+  }
+
   release_channel {
     channel = "REGULAR"
   }
 
-  # Security settings
   master_auth {
     client_certificate_config {
       issue_client_certificate = false
     }
   }
 
-  # Network policy
   network_policy {
     enabled = true
   }
@@ -279,7 +345,6 @@ resource "google_container_cluster" "primary" {
   }
 }
 
-# Separately Managed Node Pool
 resource "google_container_node_pool" "primary_nodes" {
   name       = "${var.cluster_name}-node-pool"
   location   = var.region
@@ -321,52 +386,61 @@ resource "google_container_node_pool" "primary_nodes" {
     workload_metadata_config {
       mode = "GKE_METADATA"
     }
+
+    shielded_instance_config {
+      enable_secure_boot          = true
+      enable_integrity_monitoring = true
+    }
+
+    image_type   = "COS_CONTAINERD"
+    disk_type    = "pd-ssd"
+    disk_size_gb = 100
+
+    gcfs_config {
+      enabled = true
+    }
+
+    gvnic {
+      enabled = true
+    }
   }
 }
 
-# Service Account for GKE nodes
-resource "google_service_account" "gke_sa" {
-  account_id   = "qualys-registry-sensor-gke-sa"
-  display_name = "Qualys Registry Sensor GKE Node Service Account"
+resource "google_binary_authorization_policy" "policy" {
+  count = var.enable_binary_authorization ? 1 : 0
+
+  admission_whitelist_patterns {
+    name_pattern = "gcr.io/google_containers/*"
+  }
+
+  admission_whitelist_patterns {
+    name_pattern = "gcr.io/google-containers/*"
+  }
+
+  admission_whitelist_patterns {
+    name_pattern = "k8s.gcr.io/*"
+  }
+
+  admission_whitelist_patterns {
+    name_pattern = "gke.gcr.io/*"
+  }
+
+  admission_whitelist_patterns {
+    name_pattern = "gcr.io/gke-release/*"
+  }
+
+  admission_whitelist_patterns {
+    name_pattern = "gcr.io/${var.project_id}/*"
+  }
+
+  default_admission_rule {
+    evaluation_mode  = "ALWAYS_ALLOW"
+    enforcement_mode = "ENFORCED_BLOCK_AND_AUDIT_LOG"
+  }
+
+  global_policy_evaluation_mode = "ENABLE"
 }
 
-# IAM bindings for the service account
-resource "google_project_iam_member" "gke_sa_log_writer" {
-  project = var.project_id
-  role    = "roles/logging.logWriter"
-  member  = "serviceAccount:${google_service_account.gke_sa.email}"
-}
-
-resource "google_project_iam_member" "gke_sa_metric_writer" {
-  project = var.project_id
-  role    = "roles/monitoring.metricWriter"
-  member  = "serviceAccount:${google_service_account.gke_sa.email}"
-}
-
-resource "google_project_iam_member" "gke_sa_monitoring_viewer" {
-  project = var.project_id
-  role    = "roles/monitoring.viewer"
-  member  = "serviceAccount:${google_service_account.gke_sa.email}"
-}
-
-resource "google_project_iam_member" "gke_sa_artifact_registry_reader" {
-  project = var.project_id
-  role    = "roles/artifactregistry.reader"
-  member  = "serviceAccount:${google_service_account.gke_sa.email}"
-}
-
-# Enable required APIs
-resource "google_project_service" "container" {
-  service            = "container.googleapis.com"
-  disable_on_destroy = false
-}
-
-resource "google_project_service" "compute" {
-  service            = "compute.googleapis.com"
-  disable_on_destroy = false
-}
-
-# Outputs
 output "project_id" {
   value       = var.project_id
   description = "GCP Project ID"
@@ -406,4 +480,14 @@ output "network_name" {
 output "subnet_name" {
   value       = google_compute_subnetwork.subnet.name
   description = "Subnet name"
+}
+
+output "workload_identity_pool" {
+  value       = "${var.project_id}.svc.id.goog"
+  description = "Workload Identity Pool for pod authentication"
+}
+
+output "binary_authorization_enabled" {
+  value       = var.enable_binary_authorization
+  description = "Whether Binary Authorization is enabled"
 }

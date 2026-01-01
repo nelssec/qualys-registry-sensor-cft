@@ -2,6 +2,81 @@ apiVersion: v1
 kind: Namespace
 metadata:
   name: qualys-sensor
+  labels:
+    pod-security.kubernetes.io/enforce: privileged
+    pod-security.kubernetes.io/audit: privileged
+    pod-security.kubernetes.io/warn: privileged
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: qualys-sensor-network-policy
+  namespace: qualys-sensor
+spec:
+  podSelector:
+    matchLabels:
+      app: qualys-container-sensor
+  policyTypes:
+  - Ingress
+  - Egress
+  egress:
+  - to:
+    - ipBlock:
+        cidr: 0.0.0.0/0
+        except:
+        - 10.0.0.0/8
+        - 172.16.0.0/12
+        - 192.168.0.0/16
+    ports:
+    - port: 443
+      protocol: TCP
+  - to:
+    - namespaceSelector: {}
+      podSelector:
+        matchLabels:
+          k8s-app: kube-dns
+    ports:
+    - port: 53
+      protocol: UDP
+    - port: 53
+      protocol: TCP
+  - to:
+    - ipBlock:
+        cidr: 0.0.0.0/0
+    ports:
+    - port: 443
+      protocol: TCP
+    - port: 6443
+      protocol: TCP
+  ingress: []
+---
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: qualys-sensor-quota
+  namespace: qualys-sensor
+spec:
+  hard:
+    pods: "100"
+    requests.cpu: "50"
+    requests.memory: 100Gi
+    limits.cpu: "100"
+    limits.memory: 200Gi
+---
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: qualys-sensor-limits
+  namespace: qualys-sensor
+spec:
+  limits:
+  - default:
+      cpu: "500m"
+      memory: "1Gi"
+    defaultRequest:
+      cpu: "250m"
+      memory: "512Mi"
+    type: Container
 ---
 apiVersion: v1
 kind: Secret
@@ -26,6 +101,10 @@ spec:
   selector:
     matchLabels:
       app: qualys-container-sensor
+  updateStrategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 1
   template:
     metadata:
       labels:
@@ -35,6 +114,11 @@ spec:
       serviceAccountName: qualys-sensor
       hostNetwork: false
       hostPID: false
+      hostIPC: false
+      priorityClassName: system-node-critical
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault
       containers:
       - name: qualys-container-sensor
         image: YOUR_REGISTRY/qualys/qcs-sensor:latest
@@ -68,6 +152,14 @@ spec:
           valueFrom:
             fieldRef:
               fieldPath: spec.nodeName
+        - name: POD_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+        - name: POD_NAMESPACE
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.namespace
         volumeMounts:
         - name: docker-sock
           mountPath: /var/run/docker.sock
@@ -88,9 +180,43 @@ spec:
           requests:
             memory: "512Mi"
             cpu: "250m"
+        livenessProbe:
+          exec:
+            command:
+            - /bin/sh
+            - -c
+            - "pgrep -f qualys || exit 1"
+          initialDelaySeconds: 60
+          periodSeconds: 30
+          timeoutSeconds: 5
+          failureThreshold: 3
+        readinessProbe:
+          exec:
+            command:
+            - /bin/sh
+            - -c
+            - "pgrep -f qualys || exit 1"
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+        startupProbe:
+          exec:
+            command:
+            - /bin/sh
+            - -c
+            - "pgrep -f qualys || exit 1"
+          initialDelaySeconds: 10
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 30
         securityContext:
           privileged: false
+          allowPrivilegeEscalation: true
+          readOnlyRootFilesystem: false
           capabilities:
+            drop:
+              - ALL
             add:
               - SYS_ADMIN
               - DAC_OVERRIDE
@@ -108,22 +234,30 @@ spec:
       - name: docker-root
         hostPath:
           path: /var/lib/docker
-          type: Directory
+          type: DirectoryOrCreate
       - name: containerd-root
         hostPath:
           path: /var/lib/containerd
-          type: Directory
+          type: DirectoryOrCreate
       tolerations:
       - effect: NoSchedule
         operator: Exists
       - effect: NoExecute
         operator: Exists
+      topologySpreadConstraints:
+      - maxSkew: 1
+        topologyKey: topology.kubernetes.io/zone
+        whenUnsatisfiable: ScheduleAnyway
+        labelSelector:
+          matchLabels:
+            app: qualys-container-sensor
 ---
 apiVersion: v1
 kind: ServiceAccount
 metadata:
   name: qualys-sensor
   namespace: qualys-sensor
+automountServiceAccountToken: true
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
@@ -131,10 +265,16 @@ metadata:
   name: qualys-sensor
 rules:
 - apiGroups: [""]
-  resources: ["pods", "nodes"]
+  resources: ["pods", "nodes", "namespaces", "services", "endpoints"]
   verbs: ["get", "list", "watch"]
 - apiGroups: ["apps"]
   resources: ["daemonsets", "deployments", "replicasets", "statefulsets"]
+  verbs: ["get", "list", "watch"]
+- apiGroups: ["batch"]
+  resources: ["jobs", "cronjobs"]
+  verbs: ["get", "list", "watch"]
+- apiGroups: ["networking.k8s.io"]
+  resources: ["networkpolicies"]
   verbs: ["get", "list", "watch"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
@@ -149,3 +289,14 @@ subjects:
 - kind: ServiceAccount
   name: qualys-sensor
   namespace: qualys-sensor
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: qualys-sensor-pdb
+  namespace: qualys-sensor
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: qualys-container-sensor

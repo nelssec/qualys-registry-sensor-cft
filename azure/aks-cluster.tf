@@ -83,7 +83,18 @@ variable "qualys_image" {
   default     = ""
 }
 
-# Resource Group
+variable "enable_defender" {
+  description = "Enable Microsoft Defender for Containers"
+  type        = bool
+  default     = true
+}
+
+variable "allowed_ip_ranges" {
+  description = "IP ranges allowed to access the Kubernetes API server"
+  type        = list(string)
+  default     = []
+}
+
 resource "azurerm_resource_group" "rg" {
   name     = var.resource_group_name
   location = var.location
@@ -94,7 +105,32 @@ resource "azurerm_resource_group" "rg" {
   }
 }
 
-# Azure Container Registry (optional)
+resource "azurerm_log_analytics_workspace" "aks" {
+  name                = "${var.cluster_name}-logs"
+  location            = azurerm_resource_group.rg.location
+  resource_group_name = azurerm_resource_group.rg.name
+  sku                 = "PerGB2018"
+  retention_in_days   = 90
+
+  tags = {
+    Environment = "Production"
+    Purpose     = "AKS Monitoring"
+  }
+}
+
+resource "azurerm_log_analytics_solution" "containers" {
+  solution_name         = "ContainerInsights"
+  location              = azurerm_resource_group.rg.location
+  resource_group_name   = azurerm_resource_group.rg.name
+  workspace_resource_id = azurerm_log_analytics_workspace.aks.id
+  workspace_name        = azurerm_log_analytics_workspace.aks.name
+
+  plan {
+    publisher = "Microsoft"
+    product   = "OMSGallery/ContainerInsights"
+  }
+}
+
 resource "azurerm_container_registry" "acr" {
   count               = var.create_acr ? 1 : 0
   name                = var.acr_name != "" ? var.acr_name : replace("${var.cluster_name}acr", "-", "")
@@ -109,7 +145,6 @@ resource "azurerm_container_registry" "acr" {
   }
 }
 
-# Virtual Network
 resource "azurerm_virtual_network" "vnet" {
   name                = "${var.cluster_name}-vnet"
   location            = azurerm_resource_group.rg.location
@@ -121,7 +156,6 @@ resource "azurerm_virtual_network" "vnet" {
   }
 }
 
-# Network Security Group for AKS subnet
 resource "azurerm_network_security_group" "aks" {
   name                = "${var.cluster_name}-aks-nsg"
   location            = azurerm_resource_group.rg.location
@@ -137,7 +171,6 @@ resource "azurerm_network_security_group" "aks" {
     destination_port_range     = "443"
     source_address_prefix      = "*"
     destination_address_prefix = "*"
-    description                = "Allow HTTPS for Qualys platform and ACR"
   }
 
   security_rule {
@@ -150,7 +183,6 @@ resource "azurerm_network_security_group" "aks" {
     destination_port_range     = "53"
     source_address_prefix      = "*"
     destination_address_prefix = "*"
-    description                = "Allow DNS queries"
   }
 
   security_rule {
@@ -163,7 +195,6 @@ resource "azurerm_network_security_group" "aks" {
     destination_port_range     = "*"
     source_address_prefix      = "VirtualNetwork"
     destination_address_prefix = "VirtualNetwork"
-    description                = "Allow intra-VNet communication"
   }
 
   security_rule {
@@ -176,7 +207,6 @@ resource "azurerm_network_security_group" "aks" {
     destination_port_range     = "*"
     source_address_prefix      = "*"
     destination_address_prefix = "*"
-    description                = "Deny all other inbound traffic"
   }
 
   tags = {
@@ -184,7 +214,6 @@ resource "azurerm_network_security_group" "aks" {
   }
 }
 
-# Subnet for AKS
 resource "azurerm_subnet" "aks_subnet" {
   name                 = "${var.cluster_name}-subnet"
   resource_group_name  = azurerm_resource_group.rg.name
@@ -192,13 +221,11 @@ resource "azurerm_subnet" "aks_subnet" {
   address_prefixes     = ["10.1.0.0/20"]
 }
 
-# Associate NSG with AKS Subnet
 resource "azurerm_subnet_network_security_group_association" "aks" {
   subnet_id                 = azurerm_subnet.aks_subnet.id
   network_security_group_id = azurerm_network_security_group.aks.id
 }
 
-# Public IP for NAT Gateway
 resource "azurerm_public_ip" "nat" {
   name                = "${var.cluster_name}-nat-ip"
   location            = azurerm_resource_group.rg.location
@@ -211,7 +238,6 @@ resource "azurerm_public_ip" "nat" {
   }
 }
 
-# NAT Gateway for outbound internet access
 resource "azurerm_nat_gateway" "nat" {
   name                = "${var.cluster_name}-nat"
   location            = azurerm_resource_group.rg.location
@@ -223,25 +249,26 @@ resource "azurerm_nat_gateway" "nat" {
   }
 }
 
-# Associate NAT Gateway with Public IP
 resource "azurerm_nat_gateway_public_ip_association" "nat" {
   nat_gateway_id       = azurerm_nat_gateway.nat.id
   public_ip_address_id = azurerm_public_ip.nat.id
 }
 
-# Associate NAT Gateway with AKS Subnet
 resource "azurerm_subnet_nat_gateway_association" "aks" {
   subnet_id      = azurerm_subnet.aks_subnet.id
   nat_gateway_id = azurerm_nat_gateway.nat.id
 }
 
-# AKS Cluster
 resource "azurerm_kubernetes_cluster" "aks" {
   name                = var.cluster_name
   location            = azurerm_resource_group.rg.location
   resource_group_name = azurerm_resource_group.rg.name
   dns_prefix          = var.cluster_name
   kubernetes_version  = var.kubernetes_version
+
+  api_server_access_profile {
+    authorized_ip_ranges = length(var.allowed_ip_ranges) > 0 ? var.allowed_ip_ranges : null
+  }
 
   default_node_pool {
     name                = "default"
@@ -250,9 +277,12 @@ resource "azurerm_kubernetes_cluster" "aks" {
     vnet_subnet_id      = azurerm_subnet.aks_subnet.id
     type                = "VirtualMachineScaleSets"
     os_disk_size_gb     = 30
+    os_disk_type        = "Ephemeral"
     enable_auto_scaling = true
     min_count           = 1
     max_count           = 10
+    fips_enabled        = false
+    zones               = ["1", "2", "3"]
 
     upgrade_settings {
       max_surge = "10%"
@@ -272,6 +302,31 @@ resource "azurerm_kubernetes_cluster" "aks" {
     dns_service_ip    = "10.2.0.10"
   }
 
+  azure_policy_enabled = true
+
+  oms_agent {
+    log_analytics_workspace_id = azurerm_log_analytics_workspace.aks.id
+  }
+
+  dynamic "microsoft_defender" {
+    for_each = var.enable_defender ? [1] : []
+    content {
+      log_analytics_workspace_id = azurerm_log_analytics_workspace.aks.id
+    }
+  }
+
+  key_vault_secrets_provider {
+    secret_rotation_enabled = true
+  }
+
+  workload_identity_enabled = true
+  oidc_issuer_enabled       = true
+
+  image_cleaner_enabled        = true
+  image_cleaner_interval_hours = 48
+
+  local_account_disabled = false
+
   tags = {
     Environment = "Production"
     Purpose     = "Qualys Registry Sensor"
@@ -283,7 +338,6 @@ resource "azurerm_kubernetes_cluster" "aks" {
   ]
 }
 
-# Role assignment for AKS to pull from ACR
 resource "azurerm_role_assignment" "aks_acr" {
   count                = var.create_acr ? 1 : 0
   principal_id         = azurerm_kubernetes_cluster.aks.kubelet_identity[0].object_id
@@ -291,7 +345,6 @@ resource "azurerm_role_assignment" "aks_acr" {
   scope                = azurerm_container_registry.acr[0].id
 }
 
-# Outputs
 output "resource_group_name" {
   value       = azurerm_resource_group.rg.name
   description = "Name of the resource group"
@@ -320,4 +373,14 @@ output "get_credentials_command" {
 output "qualys_image_location" {
   value       = var.create_acr ? "${azurerm_container_registry.acr[0].login_server}/qualys/qcs-sensor:latest" : var.qualys_image
   description = "Expected location of Qualys container image"
+}
+
+output "log_analytics_workspace_id" {
+  value       = azurerm_log_analytics_workspace.aks.id
+  description = "Log Analytics Workspace ID"
+}
+
+output "oidc_issuer_url" {
+  value       = azurerm_kubernetes_cluster.aks.oidc_issuer_url
+  description = "OIDC Issuer URL for workload identity"
 }

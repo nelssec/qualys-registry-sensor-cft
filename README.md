@@ -1,10 +1,10 @@
-# Qualys Registry Sensor - Multi-Cloud Deployment
+# Qualys Container Security Registry Sensor - Multi-Cloud Deployment
 
-Deploy Qualys Container Registry Sensor across AWS, Azure, and GCP with Terraform.
+Deploy Qualys Container Security Registry Sensor across AWS, Azure, and GCP with Terraform.
 
 ## Overview
 
-Terraform configurations for deploying Qualys Container Registry Sensor on:
+Terraform configurations for deploying Qualys Container Security Registry Sensor on:
 - **AWS ECS**: EC2-based ECS cluster with optional VPC creation
 - **Azure AKS**: Managed Kubernetes with Azure Container Registry
 - **GCP GKE**: Managed Kubernetes with Google Container Registry
@@ -57,7 +57,7 @@ terraform apply
 - 2x Public subnets with NAT gateways
 - 2x Private subnets for ECS instances
 - Auto-scaling group with EC2 instances
-- One Qualys sensor task per instance
+- One Qualys Container Security Registry Sensor task per instance
 
 **With create_vpc=false**:
 - Uses existing VPC and subnets
@@ -126,7 +126,7 @@ Edit `kubernetes/qualys-namespace-secret.yaml` with your credentials, then:
 kubectl apply -f ../kubernetes/qualys-namespace-secret.yaml
 ```
 
-### Deploy Sensor DaemonSet
+### Deploy Registry Sensor DaemonSet
 
 Update image in `kubernetes/qualys-daemonset.yaml` with your ACR location, then:
 
@@ -139,9 +139,9 @@ kubectl get pods -n qualys-sensor
 
 - AKS cluster with auto-scaling node pools (1-10 nodes)
 - VNet: 10.1.0.0/16 with dedicated subnet
-- Azure Container Registry for Qualys images
+- Azure Container Registry for Qualys Container Security Registry Sensor images
 - Log Analytics workspace for monitoring
-- DaemonSet deployment (one pod per node)
+- DaemonSet deployment (one Registry Sensor pod per node)
 
 ### Outputs
 
@@ -215,7 +215,7 @@ Edit `kubernetes/qualys-namespace-secret.yaml` with your credentials, then:
 kubectl apply -f ../kubernetes/qualys-namespace-secret.yaml
 ```
 
-### Deploy Sensor DaemonSet
+### Deploy Registry Sensor DaemonSet
 
 Update image in `kubernetes/qualys-daemonset.yaml` with your GCR location, then:
 
@@ -228,10 +228,10 @@ kubectl get pods -n qualys-sensor
 
 - Regional GKE cluster with multi-zone node pools
 - Custom VPC with dedicated subnet ranges
-- Google Container Registry for Qualys images
+- Google Container Registry for Qualys Container Security Registry Sensor images
 - Cloud Monitoring and Logging integration
 - Workload Identity enabled
-- DaemonSet deployment (one pod per node)
+- DaemonSet deployment (one Registry Sensor pod per node)
 
 ### Outputs
 
@@ -245,7 +245,7 @@ terraform output get_credentials_command
 
 ## Common Operations
 
-### View Sensor Logs
+### View Registry Sensor Logs
 
 ```bash
 kubectl get pods -n qualys-sensor
@@ -253,7 +253,7 @@ kubectl logs -n qualys-sensor -l app=qualys-container-sensor --tail=100
 kubectl logs -n qualys-sensor <pod-name> -f
 ```
 
-### Update Sensor Image
+### Update Registry Sensor Image
 
 ```bash
 kubectl set image daemonset/qualys-container-sensor \
@@ -278,18 +278,18 @@ kubectl get secret qualys-credentials -n qualys-sensor
 - Rotate credentials regularly
 
 **Network**:
-- Sensors require outbound internet access to Qualys platform
+- Registry Sensor requires outbound internet access to Qualys platform
 - Use private subnets with NAT gateway
 - Configure appropriate security groups and firewall rules
 
 **Permissions**:
-- Sensors require elevated capabilities for container scanning
+- Registry Sensor requires elevated capabilities for container scanning
 - Review required permissions before deployment
 - Follow principle of least privilege
 
 **Images**:
-- Store Qualys sensor images in private registries
-- Keep sensor images updated
+- Store Qualys Container Security Registry Sensor images in private registries
+- Keep Registry Sensor images updated
 - Scan images for vulnerabilities
 
 ---
@@ -319,6 +319,6 @@ terraform destroy
 ## Support
 
 For issues related to:
-- **Qualys Sensor**: Contact Qualys Support
+- **Qualys Container Security Registry Sensor**: Contact Qualys Support
 - **Deployment Templates**: Open an issue in this repository
 - **Cloud Providers**: Consult respective cloud provider documentation

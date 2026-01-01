@@ -115,6 +115,8 @@ data "aws_ssm_parameter" "ecs_ami" {
   name = "/aws/service/ecs/optimized-ami/amazon-linux-2/recommended/image_id"
 }
 
+data "aws_caller_identity" "current" {}
+
 resource "aws_vpc" "main" {
   count                = var.create_vpc ? 1 : 0
   cidr_block           = "172.20.250.0/24"
@@ -245,8 +247,177 @@ resource "aws_security_group" "ecs_instances" {
   }
 }
 
+resource "aws_kms_key" "logs" {
+  description             = "KMS key for CloudWatch Logs encryption"
+  deletion_window_in_days = 7
+  enable_key_rotation     = true
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid    = "Enable IAM User Permissions"
+        Effect = "Allow"
+        Principal = {
+          AWS = "arn:aws:iam::${data.aws_caller_identity.current.account_id}:root"
+        }
+        Action   = "kms:*"
+        Resource = "*"
+      },
+      {
+        Sid    = "Allow CloudWatch Logs"
+        Effect = "Allow"
+        Principal = {
+          Service = "logs.${var.region}.amazonaws.com"
+        }
+        Action = [
+          "kms:Encrypt*",
+          "kms:Decrypt*",
+          "kms:ReEncrypt*",
+          "kms:GenerateDataKey*",
+          "kms:Describe*"
+        ]
+        Resource = "*"
+        Condition = {
+          ArnLike = {
+            "kms:EncryptionContext:aws:logs:arn" = "arn:aws:logs:${var.region}:${data.aws_caller_identity.current.account_id}:*"
+          }
+        }
+      }
+    ]
+  })
+
+  tags = {
+    Name = "${var.cluster_name}-logs-key"
+  }
+}
+
+resource "aws_kms_alias" "logs" {
+  name          = "alias/${var.cluster_name}-logs"
+  target_key_id = aws_kms_key.logs.key_id
+}
+
+resource "aws_kms_key" "secrets" {
+  description             = "KMS key for Secrets Manager encryption"
+  deletion_window_in_days = 7
+  enable_key_rotation     = true
+
+  tags = {
+    Name = "${var.cluster_name}-secrets-key"
+  }
+}
+
+resource "aws_kms_alias" "secrets" {
+  name          = "alias/${var.cluster_name}-secrets"
+  target_key_id = aws_kms_key.secrets.key_id
+}
+
+resource "aws_secretsmanager_secret" "qualys_activation_id" {
+  name                    = "${var.cluster_name}/qualys/activation-id"
+  description             = "Qualys activation ID"
+  recovery_window_in_days = 7
+  kms_key_id              = aws_kms_key.secrets.arn
+
+  tags = {
+    Name = "${var.cluster_name}-qualys-activation-id"
+  }
+}
+
+resource "aws_secretsmanager_secret_version" "qualys_activation_id" {
+  secret_id     = aws_secretsmanager_secret.qualys_activation_id.id
+  secret_string = var.qualys_activation_id
+}
+
+resource "aws_secretsmanager_secret" "qualys_customer_id" {
+  name                    = "${var.cluster_name}/qualys/customer-id"
+  description             = "Qualys customer ID"
+  recovery_window_in_days = 7
+  kms_key_id              = aws_kms_key.secrets.arn
+
+  tags = {
+    Name = "${var.cluster_name}-qualys-customer-id"
+  }
+}
+
+resource "aws_secretsmanager_secret_version" "qualys_customer_id" {
+  secret_id     = aws_secretsmanager_secret.qualys_customer_id.id
+  secret_string = var.qualys_customer_id
+}
+
+resource "aws_cloudwatch_log_group" "qualys" {
+  name              = "/ecs/${var.cluster_name}/qualys-sensor"
+  retention_in_days = 90
+  kms_key_id        = aws_kms_key.logs.arn
+}
+
+resource "aws_cloudwatch_log_group" "flow_logs" {
+  count             = var.create_vpc ? 1 : 0
+  name              = "/vpc/${var.cluster_name}/flow-logs"
+  retention_in_days = 90
+  kms_key_id        = aws_kms_key.logs.arn
+}
+
+resource "aws_iam_role" "flow_logs" {
+  count = var.create_vpc ? 1 : 0
+  name  = "${var.cluster_name}-flow-logs-role"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Action = "sts:AssumeRole"
+        Effect = "Allow"
+        Principal = {
+          Service = "vpc-flow-logs.amazonaws.com"
+        }
+      }
+    ]
+  })
+}
+
+resource "aws_iam_role_policy" "flow_logs" {
+  count = var.create_vpc ? 1 : 0
+  name  = "flow-logs-policy"
+  role  = aws_iam_role.flow_logs[0].id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Action = [
+          "logs:CreateLogGroup",
+          "logs:CreateLogStream",
+          "logs:PutLogEvents",
+          "logs:DescribeLogGroups",
+          "logs:DescribeLogStreams"
+        ]
+        Effect   = "Allow"
+        Resource = "*"
+      }
+    ]
+  })
+}
+
+resource "aws_flow_log" "main" {
+  count                = var.create_vpc ? 1 : 0
+  vpc_id               = aws_vpc.main[0].id
+  traffic_type         = "ALL"
+  log_destination_type = "cloud-watch-logs"
+  log_destination      = aws_cloudwatch_log_group.flow_logs[0].arn
+  iam_role_arn         = aws_iam_role.flow_logs[0].arn
+
+  tags = {
+    Name = "${var.cluster_name}-flow-logs"
+  }
+}
+
 resource "aws_ecs_cluster" "main" {
   name = var.cluster_name
+
+  setting {
+    name  = "containerInsights"
+    value = "enabled"
+  }
 
   tags = {
     Name = var.cluster_name
@@ -302,6 +473,36 @@ resource "aws_iam_role_policy_attachment" "ecs_task_execution" {
   policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy"
 }
 
+resource "aws_iam_role_policy" "ecs_task_execution_secrets" {
+  name = "secrets-access"
+  role = aws_iam_role.ecs_task_execution.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "secretsmanager:GetSecretValue"
+        ]
+        Resource = [
+          aws_secretsmanager_secret.qualys_activation_id.arn,
+          aws_secretsmanager_secret.qualys_customer_id.arn
+        ]
+      },
+      {
+        Effect = "Allow"
+        Action = [
+          "kms:Decrypt"
+        ]
+        Resource = [
+          aws_kms_key.secrets.arn
+        ]
+      }
+    ]
+  })
+}
+
 resource "aws_iam_role" "ecs_task" {
   name = "QualysRegistrySensorTaskRole"
 
@@ -329,8 +530,27 @@ resource "aws_launch_template" "ecs" {
   }
 
   vpc_security_group_ids = [aws_security_group.ecs_instances.id]
+  key_name               = var.key_name != "" ? var.key_name : null
 
-  key_name = var.key_name != "" ? var.key_name : null
+  metadata_options {
+    http_endpoint               = "enabled"
+    http_tokens                 = "required"
+    http_put_response_hop_limit = 1
+  }
+
+  block_device_mappings {
+    device_name = "/dev/xvda"
+    ebs {
+      encrypted             = true
+      volume_type           = "gp3"
+      volume_size           = 30
+      delete_on_termination = true
+    }
+  }
+
+  monitoring {
+    enabled = true
+  }
 
   user_data = base64encode(<<-EOF
     #!/bin/bash
@@ -342,6 +562,13 @@ resource "aws_launch_template" "ecs" {
     resource_type = "instance"
     tags = {
       Name = "${var.cluster_name}-ecs-instance"
+    }
+  }
+
+  tag_specifications {
+    resource_type = "volume"
+    tags = {
+      Name = "${var.cluster_name}-ecs-volume"
     }
   }
 }
@@ -368,21 +595,23 @@ resource "aws_autoscaling_group" "ecs" {
   }
 }
 
-resource "aws_cloudwatch_log_group" "qualys" {
-  name              = "/ecs/${var.cluster_name}/qualys-sensor"
-  retention_in_days = 7
-}
-
 locals {
   container_environment = concat(
-    [
-      { name = "ACTIVATIONID", value = var.qualys_activation_id },
-      { name = "CUSTOMERID", value = var.qualys_customer_id }
-    ],
     var.qualys_pod_url != "" ? [{ name = "POD_URL", value = var.qualys_pod_url }] : [],
     var.qualys_https_proxy != "" ? [{ name = "qualys_https_proxy", value = var.qualys_https_proxy }] : [],
     var.https_proxy != "" ? [{ name = "https_proxy", value = var.https_proxy }] : []
   )
+
+  container_secrets = [
+    {
+      name      = "ACTIVATIONID"
+      valueFrom = aws_secretsmanager_secret.qualys_activation_id.arn
+    },
+    {
+      name      = "CUSTOMERID"
+      valueFrom = aws_secretsmanager_secret.qualys_customer_id.arn
+    }
+  ]
 }
 
 resource "aws_ecs_task_definition" "qualys" {
@@ -394,11 +623,12 @@ resource "aws_ecs_task_definition" "qualys" {
 
   container_definitions = jsonencode([
     {
-      name      = "qualys-container-sensor"
-      image     = var.qualys_image
-      essential = true
-      privileged = true
+      name        = "qualys-container-sensor"
+      image       = var.qualys_image
+      essential   = true
+      privileged  = true
       environment = local.container_environment
+      secrets     = local.container_secrets
       mountPoints = [
         {
           sourceVolume  = "docker-sock"
@@ -418,6 +648,13 @@ resource "aws_ecs_task_definition" "qualys" {
           "awslogs-region"        = var.region
           "awslogs-stream-prefix" = "qualys"
         }
+      }
+      healthCheck = {
+        command     = ["CMD-SHELL", "pgrep -f qualys || exit 1"]
+        interval    = 30
+        timeout     = 5
+        retries     = 3
+        startPeriod = 60
       }
     }
   ])
@@ -476,4 +713,12 @@ output "task_definition_arn" {
 output "service_name" {
   value       = aws_ecs_service.qualys.name
   description = "ECS service name"
+}
+
+output "secrets_manager_arns" {
+  value = {
+    activation_id = aws_secretsmanager_secret.qualys_activation_id.arn
+    customer_id   = aws_secretsmanager_secret.qualys_customer_id.arn
+  }
+  description = "Secrets Manager ARNs for Qualys credentials"
 }
